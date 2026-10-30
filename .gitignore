@@ -1,0 +1,39 @@
+# Node / Electron
+node_modules/
+out/
+release/
+.vite/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+backend/dev-data/
+dev-data/
+
+# App runtime data
+*.db
+*.db-wal
+*.db-shm
+browser_profiles/
+logs/
+exports/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

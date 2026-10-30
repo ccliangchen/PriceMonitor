@@ -1,0 +1,24 @@
+appId: com.pricemonitor.app
+productName: PriceMonitor
+directories:
+  buildResources: build
+  output: release
+files:
+  - out/**/*
+  - resources/**/*
+  - package.json
+extraResources:
+  - from: backend/dist/price-monitor-backend
+    to: backend
+win:
+  target:
+    - nsis
+  icon: resources/icon.ico
+nsis:
+  include: build/installer.nsh
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  deleteAppDataOnUninstall: false
