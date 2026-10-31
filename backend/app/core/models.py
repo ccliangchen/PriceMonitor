@@ -14,10 +14,32 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class UTCDateTime(TypeDecorator):
+    """Persist naive UTC in SQLite and return timezone-aware UTC values."""
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    def process_result_value(self, value: datetime | None, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 class Base(DeclarativeBase):
@@ -38,10 +60,10 @@ class Product(Base):
     canonical_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False
     )
 
     listings: Mapped[list[Listing]] = relationship(
@@ -79,12 +101,12 @@ class Listing(Base):
     status: Mapped[str] = mapped_column(
         String(32), default="needs_review", nullable=False, index=True
     )
-    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False
     )
 
     product: Mapped[Product] = relationship(back_populates="listings")
@@ -104,7 +126,7 @@ class PriceSnapshot(Base):
         ForeignKey("listings.id", ondelete="CASCADE"), nullable=False, index=True
     )
     captured_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+        UTCDateTime(), default=utcnow, nullable=False, index=True
     )
     source: Mapped[str] = mapped_column(String(16), nullable=False)
     page_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -118,7 +140,7 @@ class PriceSnapshot(Base):
     status: Mapped[str] = mapped_column(String(32), default="ok", nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
 
     listing: Mapped[Listing] = relationship(back_populates="price_snapshots")
@@ -139,7 +161,7 @@ class ProductPriceSnapshot(Base):
         ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True
     )
     captured_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False, index=True
+        UTCDateTime(), default=utcnow, nullable=False, index=True
     )
     lowest_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     lowest_platform: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -151,7 +173,7 @@ class ProductPriceSnapshot(Base):
     coverage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_mix: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
 
     product: Mapped[Product] = relationship(back_populates="price_snapshots")
@@ -167,12 +189,12 @@ class Account(Base):
     status: Mapped[str] = mapped_column(
         String(32), default="needs_login", nullable=False, index=True
     )
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False
     )
 
 
@@ -190,9 +212,9 @@ class Notification(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
 
 
@@ -206,9 +228,9 @@ class JobRun(Base):
     )
     job_type: Mapped[str] = mapped_column(String(32), nullable=False)
     started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="running", nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -219,5 +241,5 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[object] = mapped_column(JSON, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False
     )

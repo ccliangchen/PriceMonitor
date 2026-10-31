@@ -43,11 +43,12 @@ export function registerIpc(
         body = JSON.stringify(request.body)
       }
 
+      const timeoutMs = path.includes('/listings/search-model') ? 120000 : 30000
       const response = await fetch(`${sidecar.info.baseUrl}${path}`, {
         method,
         headers,
         body,
-        signal: AbortSignal.timeout(30000)
+        signal: AbortSignal.timeout(timeoutMs)
       })
       const text = await response.text()
       let data: unknown = null

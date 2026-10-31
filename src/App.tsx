@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
   LayoutDashboard,
+  Plus,
   ScrollText,
   Settings as SettingsIcon,
   UserRound
@@ -14,12 +15,15 @@ import { apiRequest, getAppInfo } from '@/lib/api'
 import { formatUptime } from '@/lib/format'
 import type { Health } from '@/lib/types'
 import Accounts from '@/pages/Accounts'
+import AddProduct from '@/pages/AddProduct'
 import Dashboard from '@/pages/Dashboard'
 import Logs from '@/pages/Logs'
+import ProductDetail from '@/pages/ProductDetail'
 import SettingsPage from '@/pages/Settings'
 
 const NAV_ITEMS = [
   { to: '/', label: '仪表盘', icon: LayoutDashboard, end: true },
+  { to: '/add', label: '添加商品', icon: Plus, end: false },
   { to: '/accounts', label: '账号管理', icon: UserRound, end: false },
   { to: '/settings', label: '设置', icon: SettingsIcon, end: false },
   { to: '/logs', label: '日志', icon: ScrollText, end: false }
@@ -103,7 +107,7 @@ export default function App(): JSX.Element {
         </nav>
 
         <div className="border-t border-slate-100 px-5 py-4 text-[11px] text-slate-400">
-          <div>v{appInfo.data?.version ?? '0.1.0'} · M0 骨架</div>
+          <div>v{appInfo.data?.version ?? '0.1.0'} · M1 开发中</div>
           <div className="mt-1 truncate" title={appInfo.data?.dataDir}>
             {appInfo.data?.dataDir ?? '本地数据目录'}
           </div>
@@ -122,6 +126,8 @@ export default function App(): JSX.Element {
         <main className="min-h-0 flex-1 overflow-auto p-6">
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/add" element={<AddProduct />} />
+            <Route path="/products/:productId" element={<ProductDetail />} />
             <Route path="/accounts" element={<Accounts />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/logs" element={<Logs />} />

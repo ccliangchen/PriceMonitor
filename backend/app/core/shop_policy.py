@@ -18,9 +18,41 @@ class ShopPolicyResult:
 
 ALLOWED_SHOP_TYPES = {"official_flagship", "jd_official_self"}
 
+BRAND_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "apple": ("apple", "苹果", "iphone", "ipad", "macbook"),
+    "苹果": ("apple", "苹果", "iphone", "ipad", "macbook"),
+    "huawei": ("huawei", "华为"),
+    "华为": ("huawei", "华为"),
+    "xiaomi": ("xiaomi", "小米", "redmi", "红米"),
+    "小米": ("xiaomi", "小米", "redmi", "红米"),
+    "honor": ("honor", "荣耀"),
+    "荣耀": ("honor", "荣耀"),
+    "iqoo": ("iqoo",),
+    "vivo": ("vivo",),
+    "oppo": ("oppo",),
+    "oneplus": ("oneplus", "一加"),
+    "一加": ("oneplus", "一加"),
+    "samsung": ("samsung", "三星", "galaxy"),
+    "三星": ("samsung", "三星", "galaxy"),
+    "realme": ("realme", "真我"),
+    "真我": ("realme", "真我"),
+    "meizu": ("meizu", "魅族"),
+    "魅族": ("meizu", "魅族"),
+}
+
 
 def _normalize_brand(value: str) -> str:
     return "".join(value.lower().split())
+
+
+def _brand_matches(product_brand: str, haystack: str) -> bool:
+    brand = _normalize_brand(product_brand)
+    if not brand:
+        return False
+    if brand in haystack:
+        return True
+    keywords = BRAND_KEYWORDS.get(brand, ())
+    return any(_normalize_brand(keyword) in haystack for keyword in keywords)
 
 
 def evaluate_shop(info: ListingInfo, product_brand: str) -> ShopPolicyResult:
@@ -45,11 +77,15 @@ def evaluate_shop(info: ListingInfo, product_brand: str) -> ShopPolicyResult:
     ):
         return ShopPolicyResult(ShopDecision.NEEDS_REVIEW, "缺少京东自营标识证据")
 
-    brand_match = str(info.evidence.get("brand_match", "")).lower()
-    if brand_match == "false":
+    brand_value = str(info.evidence.get("brand_match", "")).lower()
+    if brand_value == "false":
         return ShopPolicyResult(ShopDecision.REJECTED, "店铺品牌与商品品牌不一致")
-    if brand_match != "true":
-        return ShopPolicyResult(ShopDecision.NEEDS_REVIEW, "品牌一致性未确认")
+    if brand_value != "true":
+        haystack = _normalize_brand(
+            f"{info.title} {info.shop_name} {info.evidence.get('shop_brand', '')}"
+        )
+        if not _brand_matches(product_brand, haystack):
+            return ShopPolicyResult(ShopDecision.NEEDS_REVIEW, "未在标题/店铺名中确认品牌一致")
 
     shop_brand = str(info.evidence.get("shop_brand", "")).strip()
     if shop_brand and _normalize_brand(shop_brand) != _normalize_brand(product_brand):

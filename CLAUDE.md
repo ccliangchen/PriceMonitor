@@ -24,6 +24,17 @@
 - 个人微信机器人。
 - AI 行情日报（预留接口，MVP 后实现）。
 
+### 当前实现状态（2026-11-01）
+
+- M0 已完成；M1 京东端到端已完成，并通过真实账号验证（Neo11 自营 `¥3,698`、Neo12 官方旗舰店 `¥4,899`）。
+- 已实现：扫码登录/登录检查、官方店与品牌校验、页面价 + 可见券、内嵌 `jdPrice` 解析、30 分钟调度、价格快照/史低、ServerChan 推送、型号/规格搜索、SKU 匹配、双店绑定、验证/限流暂停与人工验证、手动刷新冷却、任务日志。
+- 已知限制：
+  - 京东全站搜索和部分店铺页会被频控/验证；型号搜索优先用店铺型号映射 + 商品页 SKU 数据，仍有失败可能，需要人工验证或稍后重试。
+  - 官方店铺型号映射目前覆盖 iQOO 部分型号（`core/store_registry.py`）；其他品牌/型号需继续补充。
+  - 部分商品价格做了字体混淆，必须从页面内嵌 `priceFloor.ext.jdPrice` 取价。
+  - 规格可能不存在（如 iQOO Neo11 至尊版没有 12+512），UI 会展示可用规格并允许放弃。
+  - 结算预览券后价仍属于 M2。
+
 ## 2. 已确定的产品决策
 
 | 决策点 | 结论 |
@@ -291,7 +302,7 @@ price-monitor/
 | platform_item_id | TEXT | 平台商品 ID |
 | platform_sku_id | TEXT NULL | 平台规格 ID |
 | title | TEXT | 平台标题 |
-| status | TEXT | `active` / `paused` / `needs_review` / `error` |
+| status | TEXT | `active` / `paused` / `verifying` / `needs_review` / `error` |
 | last_checked_at | DATETIME NULL | |
 | created_at / updated_at | DATETIME | |
 
@@ -349,7 +360,7 @@ price-monitor/
 | platform | TEXT | `jd` / `taobao` |
 | display_name | TEXT | 用户自定义，如「我的京东号」 |
 | profile_dir | TEXT | 浏览器持久化目录 |
-| status | TEXT | `logged_in` / `needs_login` / `error` |
+| status | TEXT | `logged_in` / `logging_in` / `needs_login` / `error` |
 | last_login_at | DATETIME NULL | |
 | created_at / updated_at | DATETIME | |
 
@@ -500,7 +511,18 @@ class PlatformAdapter(Protocol):
   - 证据写入 `listings.shop_evidence`：badge 文本、店铺名、卖家名、品牌匹配结果、验证时间、验证方式（auto/user）。
   - 平台展示的官方标识是判定依据；应用不构成法律意义上的品牌授权验证。
 - 共享判定放在 `core/shop_policy.py`：适配器提供 `ListingInfo.evidence`，策略层结合 `Product.brand` 输出 `allowed` / `rejected` / `needs_review` 及原因；适配器不得自行放行。
-- 商品链接支持：`item.jd.com`、`item.m.jd.com`、`u.jd.com` 短链；`item.taobao.com`、`detail.tmall.com`、`m.tb.cn` 短链。短链先解析跳转。
+- 商品链接支持：`item.jd.com`、`item.m.jd.com`、`u.jd.com`、`3.cn` 短链；`item.taobao.com`、`detail.tmall.com`、`m.tb.cn` 短链。短链先解析跳转。京东桌面商品页自动转 `item.m.jd.com/product/<sku>.html`，避开 PC 频控。
+
+### 8.4 京东实现细节（M1）
+
+- 桌面商品页经常被 PC 频控（`pc-frequent-pro...reason=403`），统一改用移动版商品页抓取。
+- 移动版价格可能被字体混淆（正文是 `¥` + 私有区字符）。优先从 HTML 内嵌 `priceFloor.ext.jdPrice` 取价（`extract_embedded_price_cents`），再回退到可见的「到手价/京东价」。
+- 商品页 HTML 内含 SKU 变体（`color`/`size`/`spec`/`skuId`），用 `parse_sku_variants` 解析；规格匹配优先 `官方标配`；SKU 级链接 `item.m.jd.com/product/<skuId>.html` 可直接取对应规格价格。
+- 官方店映射在 `core/store_registry.py`（iQOO 自营 `1000310642`、官方旗舰 `10175519`）；型号搜索先匹配型号 URL，再读取商品页 SKU 列表。两家店之间间隔 20–40 秒，SKU 结果缓存 30 分钟。
+- 登录 cookie：除旧版 `pt_key`/`pt_pin` 外，京东现在使用 `thor`/`pin`/`unick`；登录检测同时支持这两组。
+- 验证/频控：捕获 `CaptchaRequired` 时暂停 Listing 并保存 `captcha` 快照；`services/verification.py` 打开有头页面等待人工完成，成功后恢复 `active`。
+- 手动刷新 120 秒冷却；应用启动时把遗留 `running` 任务标为 failed；调度多个商品/Listing 之间加 20–40 秒随机延迟。
+- 型号/规格不存在时，搜索接口返回可用规格；UI 展示可用规格与「放弃监测该商品」，不得静默选错 SKU。
 
 ## 9. 调度、登录与风控
 
@@ -551,14 +573,20 @@ class PlatformAdapter(Protocol):
 | POST | `/products/{id}/refresh` | 手动刷新 |
 | POST | `/products/{id}/checkout-calibrate` | 手动结算校准 |
 | POST | `/listings/resolve` | 解析商品链接，返回候选 ListingInfo |
+| POST | `/listings/search-model` | 按型号/规格搜索官方店，返回 SKU 候选与可用规格 |
+| POST | `/listings/{id}/verify` | 打开京东验证页，人工完成后恢复 Listing |
 | POST | `/listings` | 绑定 Listing 到 Product |
 | PATCH | `/listings/{id}` | 暂停/恢复/修改 |
 | DELETE | `/listings/{id}` | 删除 |
 | GET | `/accounts` | 账号与登录状态 |
 | POST | `/accounts/{platform}/login` | 打开登录窗口 |
 | POST | `/accounts/{platform}/logout` | 清除登录态 |
+| POST | `/accounts/{platform}/check` | 检查并刷新登录态 |
 | GET | `/settings` | 读取设置（敏感值脱敏） |
 | PATCH | `/settings` | 更新设置 |
+| GET | `/notifications/status` | 通知渠道配置状态 |
+| PUT | `/notifications/serverchan` | 保存 ServerChan SendKey（keyring） |
+| DELETE | `/notifications/serverchan` | 清除 SendKey |
 | POST | `/notifications/test` | 发送测试通知 |
 | GET | `/jobs` | 最近任务与失败摘要 |
 | GET | `/logs/tail?lines=200` | 日志尾部（脱敏） |
@@ -656,11 +684,12 @@ VS Code 扩展宿主 / Claude Code 可能注入 `ELECTRON_RUN_AS_NODE=1`，这�
 - Electron + React + Python sidecar 跑通；窗口、托盘、单实例、日志、数据目录、健康检查、IPC 代理。
 - SQLite 建表 + Alembic 初始迁移；设置页最小可用；CI 骨架。
 
-### M1 — 京东端到端（约 1–2 周）
+### M1 — 京东端到端（已完成，2026-11-01）
 
 - 京东登录（扫码 + profile 持久化）、链接解析、**官方自营/官方旗舰店**识别与校验。
-- 页面价 + 可见券抓取；30 分钟调度；价格快照；单平台史低；Server酱推送。
-- 仪表盘/详情页最小可用；手动刷新；失败日志。
+- 页面价 + 可见券抓取；内嵌 `jdPrice` 解析（应对字体混淆）；30 分钟调度；价格快照；单平台史低；ServerChan 推送。
+- 仪表盘/详情页；手动刷新（120 秒冷却）；失败日志；验证/限流暂停与人工验证。
+- 型号/规格搜索官方店、SKU 匹配、双店绑定；规格不存在时展示可用规格与放弃选项。
 
 ### M2 — 淘宝 + 跨平台（约 2 周）
 
@@ -704,6 +733,9 @@ VS Code 扩展宿主 / Claude Code 可能注入 `ELECTRON_RUN_AS_NODE=1`，这�
 | 风险 | 应对 |
 |---|---|
 | 平台 DOM 改版导致解析失败 | 解析器与选择器分离；fixtures 回归；失败日志 + 脱敏 DOM 摘要；快速热修 |
+| 京东价格字体混淆 | 从 HTML 内嵌 `priceFloor.ext.jdPrice` 取价；可见文本仅作回退；解析器单测覆盖 |
+| 京东桌面页/店铺页频控 | 自动转移动版商品页；店铺型号映射 + 商品页 SKU 解析；请求间隔 20–40 秒；验证/限流时暂停并人工验证 |
+| 型号规格不存在 | 搜索接口返回可用规格；UI 必须展示并允许“放弃监测该商品”，不得静默选错 SKU |
 | 店铺冒充官方旗舰店/自营 | 店铺名 + 官方 badge + 卖家主体 + 品牌一致性四重校验；不确定即 `needs_review`；店铺变更自动暂停 |
 | 验证码/登录过期 | 暂停平台、通知用户手动登录；不绕过；会话每日检查 |
 | 结算页价格与真实下单不一致 | 固定结算口径；展示券明细和来源；推送标注实付/预估；以结算预览为准 |

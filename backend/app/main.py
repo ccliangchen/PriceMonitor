@@ -10,11 +10,18 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 from loguru import logger
+from sqlalchemy import update
 
 from app import __version__
+from app.adapters.jd.adapter import JdAdapter
+from app.adapters.registry import register
 from app.api.router import api_router
 from app.config import Settings
-from app.core.db import init_db
+from app.core.db import init_db, session_scope
+from app.core.models import JobRun, utcnow
+from app.core.scheduler import create_scheduler
+from app.core.settings_store import load_settings
+from app.services.browser import BrowserService
 
 
 def configure_logging(settings: Settings) -> None:
@@ -40,9 +47,37 @@ def create_app(settings: Settings) -> FastAPI:
         settings.browser_profiles_dir.mkdir(parents=True, exist_ok=True)
         settings.exports_dir.mkdir(parents=True, exist_ok=True)
         init_db(settings.data_dir)
+        with session_scope() as db:
+            db.execute(
+                update(JobRun)
+                .where(JobRun.status == "running")
+                .values(
+                    status="failed",
+                    finished_at=utcnow(),
+                    error_message="应用重启，任务中断",
+                )
+            )
+            db.commit()
         logger.info("SQLite ready at {}", settings.db_path)
+
+        if settings.enable_scheduler:
+            with session_scope() as db:
+                interval = int(load_settings(db)["poll_interval_minutes"])
+            scheduler = create_scheduler(interval)
+            scheduler.start()
+            _app.state.scheduler = scheduler
+            logger.info("Price poll scheduler started ({} minutes)", interval)
+
         yield
+
+        scheduler = getattr(_app.state, "scheduler", None)
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
+        await _app.state.browser.stop()
         logger.info("Backend shutting down")
+
+    browser = BrowserService()
+    register(JdAdapter(browser))
 
     app = FastAPI(
         title="PriceMonitor Backend",
@@ -52,6 +87,8 @@ def create_app(settings: Settings) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.browser = browser
+    app.state.scheduler = None
     app.state.started_at = time.monotonic()
     app.include_router(api_router)
     return app

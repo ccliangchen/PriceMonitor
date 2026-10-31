@@ -1,10 +1,26 @@
 import type { FormEvent, JSX } from 'react'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bell, Database, FolderOpen, Save } from 'lucide-react'
+import {
+  Bell,
+  CheckCircle2,
+  Database,
+  FolderOpen,
+  KeyRound,
+  Loader2,
+  Save,
+  Send
+} from 'lucide-react'
 
 import { PageHeader } from '@/components/PageHeader'
-import { apiRequest, getAppInfo } from '@/lib/api'
+import {
+  fetchNotificationStatus,
+  fetchSettings,
+  getAppInfo,
+  saveServerchanKey,
+  testNotification,
+  updateSettings
+} from '@/lib/api'
 import type { AppSettings, NotificationChannel } from '@/lib/types'
 
 const inputClass =
@@ -15,7 +31,7 @@ export default function SettingsPage(): JSX.Element {
   const queryClient = useQueryClient()
   const settings = useQuery({
     queryKey: ['settings'],
-    queryFn: () => apiRequest<AppSettings>('GET', '/api/v1/settings'),
+    queryFn: fetchSettings,
     retry: 1
   })
   const appInfo = useQuery({
@@ -24,12 +40,18 @@ export default function SettingsPage(): JSX.Element {
     staleTime: Infinity,
     retry: false
   })
+  const notificationStatus = useQuery({
+    queryKey: ['notification-status'],
+    queryFn: fetchNotificationStatus,
+    retry: 1
+  })
 
   const [pollInterval, setPollInterval] = useState(30)
   const [checkoutHours, setCheckoutHours] = useState(6)
   const [channel, setChannel] = useState<NotificationChannel>('serverchan')
   const [closeToTray, setCloseToTray] = useState(true)
   const [autoStart, setAutoStart] = useState(false)
+  const [sendkey, setSendkey] = useState('')
 
   useEffect(() => {
     const data = settings.data
@@ -43,17 +65,35 @@ export default function SettingsPage(): JSX.Element {
     setAutoStart(data.auto_start)
   }, [settings.data])
 
-  const mutation = useMutation({
-    mutationFn: (patch: Partial<AppSettings>) =>
-      apiRequest<AppSettings>('PATCH', '/api/v1/settings', patch),
+  const settingsMutation = useMutation({
+    mutationFn: (patch: Partial<AppSettings>) => updateSettings(patch),
     onSuccess: (data) => {
       queryClient.setQueryData(['settings'], data)
+      void queryClient.invalidateQueries({ queryKey: ['settings'] })
     }
   })
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>): void {
+  const saveKey = useMutation({
+    mutationFn: saveServerchanKey,
+    onSuccess: (data) => {
+      setSendkey('')
+      queryClient.setQueryData(['notification-status'], data)
+      void queryClient.invalidateQueries({ queryKey: ['settings'] })
+    }
+  })
+
+  const testPush = useMutation({
+    mutationFn: testNotification
+  })
+
+  const configured =
+    notificationStatus.data?.serverchan_configured ??
+    settings.data?.notification_configured ??
+    false
+
+  function handleSettingsSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
-    mutation.mutate({
+    settingsMutation.mutate({
       poll_interval_minutes: pollInterval,
       checkout_interval_hours: checkoutHours,
       notification_channel: channel,
@@ -62,11 +102,19 @@ export default function SettingsPage(): JSX.Element {
     })
   }
 
+  function handleKeySubmit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    if (!sendkey.trim()) {
+      return
+    }
+    saveKey.mutate(sendkey.trim())
+  }
+
   return (
     <div>
       <PageHeader
         title="设置"
-        description="设置保存在本地 SQLite；通知密钥后续放入 Windows Credential Manager。"
+        description="设置保存在本地 SQLite；通知密钥保存在 Windows Credential Manager。"
       />
 
       {settings.isError ? (
@@ -85,11 +133,14 @@ export default function SettingsPage(): JSX.Element {
         </div>
       ) : null}
 
-      <form onSubmit={handleSubmit} className="grid gap-6 lg:grid-cols-[1.25fr_1fr]">
-        <section className="rounded-2xl border border-slate-200 bg-white p-5">
+      <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+        <form
+          onSubmit={handleSettingsSubmit}
+          className="rounded-2xl border border-slate-200 bg-white p-5"
+        >
           <h2 className="text-sm font-semibold text-slate-900">监测</h2>
           <p className="mt-1 text-xs leading-5 text-slate-500">
-            轮询间隔默认 30 分钟；结算校准只在页面价变化或达到间隔时触发，只预览不下单。
+            轮询间隔默认 30 分钟；结算校准在 M2 接入。修改后保存即重新排程。
           </p>
 
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -116,9 +167,23 @@ export default function SettingsPage(): JSX.Element {
                 onChange={(event) => setCheckoutHours(Number(event.target.value))}
                 className={inputClass}
               />
-              <span className="mt-1 block text-xs font-normal text-slate-400">4–12</span>
+              <span className="mt-1 block text-xs font-normal text-slate-400">
+                M2 接入结算预览
+              </span>
             </label>
           </div>
+
+          <label className={`${labelClass} mt-5 block`}>
+            默认通知渠道
+            <select
+              value={channel}
+              onChange={(event) => setChannel(event.target.value as NotificationChannel)}
+              className={inputClass}
+            >
+              <option value="serverchan">ServerChan</option>
+              <option value="pushplus">PushPlus（预留）</option>
+            </select>
+          </label>
 
           <div className="mt-5 space-y-3">
             <label className="flex items-center gap-2 text-sm text-slate-700">
@@ -141,44 +206,112 @@ export default function SettingsPage(): JSX.Element {
             </label>
           </div>
 
-          <button
-            type="submit"
-            disabled={mutation.isPending}
-            className="mt-5 inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-          >
-            <Save className="h-4 w-4" />
-            {mutation.isPending ? '保存中…' : '保存设置'}
-          </button>
-
-          {mutation.isSuccess ? (
-            <span className="ml-3 text-xs text-emerald-600">已保存</span>
-          ) : null}
-          {mutation.isError ? (
-            <span className="ml-3 text-xs text-rose-600">
-              {mutation.error instanceof Error ? mutation.error.message : '保存失败'}
-            </span>
-          ) : null}
-        </section>
+          <div className="mt-5 flex items-center gap-3">
+            <button
+              type="submit"
+              disabled={settingsMutation.isPending}
+              className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              {settingsMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              保存设置
+            </button>
+            {settingsMutation.isSuccess ? (
+              <span className="flex items-center gap-1 text-xs text-emerald-600">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                已保存
+              </span>
+            ) : null}
+            {settingsMutation.isError ? (
+              <span className="text-xs text-rose-600">
+                {settingsMutation.error instanceof Error
+                  ? settingsMutation.error.message
+                  : '保存失败'}
+              </span>
+            ) : null}
+          </div>
+        </form>
 
         <div className="space-y-4">
           <section className="rounded-2xl border border-slate-200 bg-white p-5">
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <Bell className="h-4 w-4" />
-              通知
-            </div>
-            <label className={`${labelClass} mt-4 block`}>
-              默认渠道
-              <select
-                value={channel}
-                onChange={(event) => setChannel(event.target.value as NotificationChannel)}
-                className={inputClass}
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                <Bell className="h-4 w-4" />
+                ServerChan 推送
+              </div>
+              <span
+                className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                  configured
+                    ? 'bg-emerald-50 text-emerald-700'
+                    : 'bg-slate-100 text-slate-500'
+                }`}
               >
-                <option value="serverchan">Server酱</option>
-                <option value="pushplus">PushPlus</option>
-              </select>
-            </label>
+                {configured ? '已配置' : '未配置'}
+              </span>
+            </div>
+
+            <form onSubmit={handleKeySubmit} className="mt-4">
+              <label className={labelClass}>
+                SendKey
+                <input
+                  type="password"
+                  value={sendkey}
+                  onChange={(event) => setSendkey(event.target.value)}
+                  placeholder={configured ? '已配置，输入新 SendKey 可覆盖' : 'SCT...'}
+                  className={inputClass}
+                />
+              </label>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="submit"
+                  disabled={!sendkey.trim() || saveKey.isPending}
+                  className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-40"
+                >
+                  {saveKey.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <KeyRound className="h-4 w-4" />
+                  )}
+                  保存密钥
+                </button>
+                <button
+                  type="button"
+                  onClick={() => testPush.mutate()}
+                  disabled={!configured || testPush.isPending}
+                  className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  {testPush.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
+                  测试推送
+                </button>
+              </div>
+            </form>
+
+            {saveKey.isSuccess ? (
+              <p className="mt-3 text-xs text-emerald-600">SendKey 已保存到本机凭据库。</p>
+            ) : null}
+            {saveKey.isError ? (
+              <p className="mt-3 text-xs text-rose-600">
+                {saveKey.error instanceof Error ? saveKey.error.message : '保存失败'}
+              </p>
+            ) : null}
+            {testPush.isSuccess ? (
+              <p className="mt-3 text-xs text-emerald-600">测试通知已发送，请查看微信。</p>
+            ) : null}
+            {testPush.isError ? (
+              <p className="mt-3 text-xs text-rose-600">
+                {testPush.error instanceof Error ? testPush.error.message : '发送失败'}
+              </p>
+            ) : null}
+
             <p className="mt-3 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-500">
-              SendKey / Token 的录入和测试按钮在 M1 通知模块完成后开放，密钥会存进 Windows Credential Manager。
+              M1 仅 ServerChan 生效。密钥不会写入 SQLite，也不会显示在界面上。
             </p>
           </section>
 
@@ -187,20 +320,18 @@ export default function SettingsPage(): JSX.Element {
               <Database className="h-4 w-4" />
               本地数据
             </div>
-            <div className="mt-3 space-y-3 text-xs text-slate-500">
-              <div className="flex items-start gap-2">
-                <FolderOpen className="mt-0.5 h-4 w-4 shrink-0" />
-                <span className="break-all font-mono leading-5">
-                  {appInfo.data?.dataDir ?? '等待后端连接'}
-                </span>
-              </div>
-              <p className="leading-5">
-                所有数据保存在本机，不上传云端。卸载默认保留数据目录；后续设置页会提供备份与导出。
-              </p>
+            <div className="mt-3 flex items-start gap-2 text-xs text-slate-500">
+              <FolderOpen className="mt-0.5 h-4 w-4 shrink-0" />
+              <span className="break-all font-mono leading-5">
+                {appInfo.data?.dataDir ?? '等待后端连接'}
+              </span>
             </div>
+            <p className="mt-3 text-xs leading-5 text-slate-500">
+              SQLite、日志、浏览器登录态和临时文件都在这个目录；卸载默认保留。
+            </p>
           </section>
         </div>
-      </form>
+      </div>
     </div>
   )
 }

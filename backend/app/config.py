@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default_factory=default_data_dir)
     token: str = ""
     log_level: str = "INFO"
+    enable_scheduler: bool = True
 
     @property
     def db_path(self) -> Path:

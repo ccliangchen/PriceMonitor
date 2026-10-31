@@ -12,6 +12,7 @@ def client(tmp_path):
         data_dir=tmp_path,
         token="test-token",
         log_level="INFO",
+        enable_scheduler=False,
     )
     app = create_app(settings)
     with TestClient(app) as test_client:
