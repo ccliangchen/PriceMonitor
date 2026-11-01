@@ -12,8 +12,11 @@ from app.adapters.taobao.parser import (
     extract_sku_id,
     extract_ssr_sku_info,
     extract_ssr_sku_price_cents,
+    extract_taobao_sku_variants,
     parse_checkout_payable_cents,
     parse_product_page,
+    parse_shop_search_results,
+    parse_store_search_items,
 )
 
 
@@ -285,3 +288,56 @@ def test_extract_ids():
     assert extract_item_id("https://item.taobao.com/item.htm?id=123456") == "123456"
     assert extract_item_id("https://uland.taobao.com/coupon/edetail?itemId=123456") == "123456"
     assert extract_item_id("https://m.tb.cn/h.abcd") is None
+
+
+def test_shop_search_extracts_shop_names_without_product_title_noise():
+    fixture = Path(__file__).parent / "fixtures" / "taobao" / "shop_search.html"
+    stores = parse_shop_search_results(fixture.read_text(encoding="utf-8"))
+
+    assert stores[0].name == "iQOO手机官方旗舰店"
+    assert stores[0].url == "https://shop71799145.taobao.com/category.htm"
+    assert any("Neo11" in item.title for item in stores[0].sample_items)
+    assert any("专卖店" in store.name for store in stores)
+    # A product title containing "官方旗舰店" must not turn a 专卖店 into an
+    # official flagship store.
+    assert all(
+        store.name == "iQOO华大专卖店" or "官方旗舰店" in store.name
+        for store in stores
+    )
+
+
+def test_store_search_items_are_deduped_and_keep_titles():
+    fixture = Path(__file__).parent / "fixtures" / "taobao" / "store_search.html"
+    items = parse_store_search_items(fixture.read_text(encoding="utf-8"))
+
+    by_id = {item.item_id: item for item in items}
+    assert "1064830909687" in by_id
+    assert "Neo11 至尊版" in by_id["1064830909687"].title
+    assert by_id["1064830909687"].url.startswith(
+        "https://item.taobao.com/item.htm?id=1064830909687"
+    )
+
+
+def test_ssr_sku_variants_extract_ram_storage_color_and_sku_url():
+    fixture = Path(__file__).parent / "fixtures" / "taobao" / "item_skus.html"
+    variants = extract_taobao_sku_variants(
+        fixture.read_text(encoding="utf-8"),
+        "https://detail.tmall.com/item.htm?id=1064830909687",
+    )
+
+    assert len(variants) == 9
+    target = next(
+        item
+        for item in variants
+        if item.ram_gb == 12 and item.storage_gb == 512 and item.color == "乘风"
+    )
+    assert target.spec == "官方标配"
+    assert target.sku_id == "6316034474209"
+    assert target.url == (
+        "https://detail.tmall.com/item.htm?id=1064830909687"
+        "&skuId=6316034474209"
+    )
+
+
+def test_ssr_sku_variants_missing_context_is_empty():
+    assert extract_taobao_sku_variants("<html></html>") == []

@@ -45,14 +45,15 @@ def _normalize_brand(value: str) -> str:
     return "".join(value.lower().split())
 
 
-def _brand_matches(product_brand: str, haystack: str) -> bool:
+def brand_matches(product_brand: str, haystack: str) -> bool:
     brand = _normalize_brand(product_brand)
+    normalized = _normalize_brand(haystack)
     if not brand:
         return False
-    if brand in haystack:
+    if brand in normalized:
         return True
     keywords = BRAND_KEYWORDS.get(brand, ())
-    return any(_normalize_brand(keyword) in haystack for keyword in keywords)
+    return any(_normalize_brand(keyword) in normalized for keyword in keywords)
 
 
 def evaluate_shop(info: ListingInfo, product_brand: str) -> ShopPolicyResult:
@@ -84,7 +85,7 @@ def evaluate_shop(info: ListingInfo, product_brand: str) -> ShopPolicyResult:
         haystack = _normalize_brand(
             f"{info.title} {info.shop_name} {info.evidence.get('shop_brand', '')}"
         )
-        if not _brand_matches(product_brand, haystack):
+        if not brand_matches(product_brand, haystack):
             return ShopPolicyResult(ShopDecision.NEEDS_REVIEW, "未在标题/店铺名中确认品牌一致")
 
     shop_brand = str(info.evidence.get("shop_brand", "")).strip()

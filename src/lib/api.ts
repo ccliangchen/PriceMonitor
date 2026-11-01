@@ -13,7 +13,8 @@ import type {
   ProductCreatePayload,
   ProductDetail,
   ProductSummary,
-  ListingResolve
+  ListingResolve,
+  SearchPlatform
 } from './types'
 
 function requireApi(): Window['api'] {
@@ -26,8 +27,18 @@ function requireApi(): Window['api'] {
 export async function apiRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response: ApiResponse = await requireApi().request(method, path, body)
   if (!response.ok) {
-    const detail = (response.data as { detail?: string } | null)?.detail
-    throw new Error(detail ?? response.error ?? `请求失败（HTTP ${response.status}）`)
+    const payload = response.data as { detail?: unknown } | null
+    const detail = typeof payload?.detail === 'string' ? payload.detail : null
+    if (detail) {
+      throw new Error(detail)
+    }
+    if (response.error) {
+      throw new Error(response.error)
+    }
+    if (response.status === 422) {
+      throw new Error('请求参数不正确，请检查输入')
+    }
+    throw new Error(`请求失败（HTTP ${response.status}）`)
   }
   return response.data as T
 }
@@ -68,9 +79,13 @@ export function resolveListing(url: string): Promise<ListingResolve> {
   return apiRequest<ListingResolve>('POST', '/api/v1/listings/resolve', { url })
 }
 
-export function searchModel(query: string): Promise<ModelSearchResponse> {
+export function searchModel(
+  query: string,
+  platform: SearchPlatform = 'jd'
+): Promise<ModelSearchResponse> {
   return apiRequest<ModelSearchResponse>('POST', '/api/v1/listings/search-model', {
-    query
+    query,
+    platform
   })
 }
 

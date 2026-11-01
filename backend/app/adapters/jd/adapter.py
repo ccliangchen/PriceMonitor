@@ -44,6 +44,15 @@ def has_login_cookies(cookie_names: set[str]) -> bool:
     return any(pair.issubset(cookie_names) for pair in LOGIN_COOKIE_PAIRS)
 
 
+def _cookie_value(cookies: list[dict], name: str) -> str | None:
+    for cookie in cookies:
+        if cookie.get("name") == name:
+            value = str(cookie.get("value") or "").strip()
+            if value:
+                return value
+    return None
+
+
 class JdAdapter:
     platform = "jd"
 
@@ -93,8 +102,62 @@ class JdAdapter:
             )
 
     async def fetch_page_price(self, listing: Listing, account: Account) -> PriceQuote:
+        return await self._fetch_page_quote(
+            listing,
+            account,
+            prefer_mobile_url(listing.url),
+        )
+
+    async def fetch_page_price_deep(
+        self,
+        listing: Listing,
+        account: Account,
+    ) -> PriceQuote:
+        """Manual-refresh path that also tries the desktop item page.
+
+        JD's desktop page exposes coupon/subsidy labels such as
+        ``国补后价`` and ``已享`` that the mobile page often omits. Desktop
+        item pages are frequently PC-rate-limited, so this is only used by
+        the explicit refresh action; scheduled polling stays on mobile.
+        """
+        mobile_quote = await self.fetch_page_price(listing, account)
+        sku = extract_sku(listing.url)
+        if sku is None:
+            return mobile_quote
+
+        try:
+            desktop_quote = await self._fetch_page_quote(
+                listing,
+                account,
+                f"https://item.jd.com/{sku}.html",
+            )
+        except Exception as exc:
+            logger.warning(
+                "JD desktop price probe failed for listing {}: {}",
+                listing.id,
+                exc,
+            )
+            return mobile_quote
+
+        mobile_price = mobile_quote.estimated_price_cents
+        desktop_price = desktop_quote.estimated_price_cents
+        if (
+            desktop_quote.status == "ok"
+            and desktop_price is not None
+            and desktop_price > 0
+            and (mobile_price is None or desktop_price < mobile_price)
+        ):
+            return desktop_quote
+        return mobile_quote
+
+    async def _fetch_page_quote(
+        self,
+        listing: Listing,
+        account: Account,
+        target_url: str,
+    ) -> PriceQuote:
         async with self.browser.session(account.profile_dir, headless=True) as page:
-            await self._goto(page, prefer_mobile_url(listing.url))
+            await self._goto(page, target_url)
             final_url = page.url
             title, body, price_texts, shop_texts, coupon_texts = await self._read_page(page)
             self._assert_not_blocked(final_url, title, body)
@@ -255,7 +318,14 @@ class JdAdapter:
                 names = {cookie["name"] for cookie in cookies}
                 if has_login_cookies(names):
                     logger.info("JD login detected")
-                    return LoginStatus(logged_in=True, message="京东登录成功")
+                    return LoginStatus(
+                        logged_in=True,
+                        message="京东登录成功",
+                        display_name=(
+                            _cookie_value(cookies, "unick")
+                            or _cookie_value(cookies, "pin")
+                        ),
+                    )
                 await page.wait_for_timeout(2000)
         raise LoginRequired("登录超时，请重新发起登录")
 
@@ -303,6 +373,11 @@ class JdAdapter:
             return LoginStatus(
                 logged_in=logged_in,
                 message="京东已登录" if logged_in else "京东未登录",
+                display_name=(
+                    (_cookie_value(cookies, "unick") or _cookie_value(cookies, "pin"))
+                    if logged_in
+                    else None
+                ),
             )
 
     async def _goto(self, page: Page, url: str) -> None:

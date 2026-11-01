@@ -5,6 +5,7 @@ import log from 'electron-log/main'
 
 import { registerIpc } from './ipc'
 import { isDev, logsDir, resourcePath } from './paths'
+import { applyDesktopPreferences, closeToTrayEnabled } from './preferences'
 import { Sidecar } from './sidecar'
 import { createTray, destroyTray } from './tray'
 
@@ -58,10 +59,15 @@ function createWindow(): void {
   })
 
   mainWindow.on('close', (event) => {
-    if (!isQuitting) {
-      event.preventDefault()
-      mainWindow?.hide()
+    if (isQuitting) {
+      return
     }
+    event.preventDefault()
+    if (closeToTrayEnabled()) {
+      mainWindow?.hide()
+      return
+    }
+    app.quit()
   })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -95,15 +101,33 @@ async function bootstrap(): Promise<void> {
   registerIpc(sidecar, () => mainWindow)
 
   createWindow()
-  createTray(() => mainWindow)
+  createTray(
+    () => mainWindow,
+    () => {
+      mainWindow?.show()
+      mainWindow?.focus()
+      mainWindow?.webContents.send('app:navigate', '/settings')
+    }
+  )
 
-  sidecar.start().catch((error) => {
-    log.error('failed to start sidecar', error)
-    dialog.showErrorBox(
-      '后端启动失败',
-      `Python sidecar 未能启动。\n\n${error instanceof Error ? error.message : String(error)}\n\n日志目录：${logsDir()}`
-    )
-  })
+  sidecar
+    .start()
+    .then(async () => {
+      const settings = await sidecar?.fetchShellSettings()
+      if (settings) {
+        applyDesktopPreferences({
+          autoStart: Boolean(settings.auto_start),
+          closeToTray: settings.close_to_tray !== false
+        })
+      }
+    })
+    .catch((error) => {
+      log.error('failed to start sidecar', error)
+      dialog.showErrorBox(
+        '后端启动失败',
+        `后端服务未能启动。\n\n${error instanceof Error ? error.message : String(error)}\n\n日志目录：${logsDir()}`
+      )
+    })
 }
 
 const gotTheLock = app.requestSingleInstanceLock()

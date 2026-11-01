@@ -23,6 +23,7 @@ class SettingsResponse(BaseModel):
     auto_start: bool = False
     notification_channel: NotificationChannel = "serverchan"
     history_retention_days: int = 0
+    onboarding_completed: bool = False
     notification_configured: bool = False
 
 
@@ -35,6 +36,7 @@ class SettingsPatch(BaseModel):
     auto_start: bool | None = None
     notification_channel: NotificationChannel | None = None
     history_retention_days: int | None = Field(default=None, ge=0)
+    onboarding_completed: bool | None = None
 
 
 class AccountResponse(BaseModel):
@@ -189,6 +191,7 @@ class JobRunResponse(BaseModel):
 
 class ModelSearchRequest(BaseModel):
     query: str = Field(min_length=1)
+    platform: Platform = "jd"
 
 
 class ParsedProductQuery(BaseModel):
@@ -209,12 +212,15 @@ class SkuVariantOption(BaseModel):
 
 
 class ModelSearchCandidate(BaseModel):
+    platform: Platform = "jd"
     store_name: str
     store_type: str
     model_url: str | None
     title: str | None
     requested_available: bool = False
     matched_sku_id: str | None = None
+    platform_item_id: str | None = None
+    shop_evidence: dict[str, str] = Field(default_factory=dict)
     variants: list[SkuVariantOption] = Field(default_factory=list)
     error: str | None = None
 

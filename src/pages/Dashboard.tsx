@@ -143,7 +143,7 @@ export default function Dashboard(): JSX.Element {
             <div>
               <h2 className="text-lg font-semibold">添加第一个商品</h2>
               <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-300">
-                先登录平台账号，再粘贴京东或淘宝/天猫商品链接。系统只允许官方旗舰店与京东官方自营，并会按品牌再次校验；同一 SKU 会自动跨平台比价。
+                先登录平台账号，再按型号搜索或粘贴京东/淘宝/天猫商品链接。系统只允许官方旗舰店与京东官方自营，并会按品牌再次校验；同一 SKU 会自动跨平台比价。
               </p>
             </div>
           </div>
@@ -162,7 +162,7 @@ export default function Dashboard(): JSX.Element {
             >
               <div className="text-xs font-medium text-emerald-300">第二步</div>
               <div className="mt-1 text-sm font-semibold">添加商品</div>
-              <div className="mt-1 text-xs text-slate-400">粘贴链接并指定 SKU 规格</div>
+              <div className="mt-1 text-xs text-slate-400">按型号搜索或粘贴链接，指定 SKU</div>
             </Link>
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">
               <div className="text-xs font-medium text-emerald-300">第三步</div>

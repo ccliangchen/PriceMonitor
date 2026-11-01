@@ -22,10 +22,17 @@ class ServerChanNotifier(Notifier):
                 data={"title": message.title, "desp": message.body},
             )
             response.raise_for_status()
-            payload = response.json()
+        payload = response.json()
 
-        if payload.get("code") != 0:
-            raise RuntimeError(f"ServerChan returned an error: {payload}")
-        data = payload.get("data") or {}
-        if data.get("error"):
-            raise RuntimeError(f"ServerChan push error: {data['error']}")
+        code = payload.get("code")
+        if str(code) != "0":
+            raise RuntimeError(f"ServerChan 返回错误：{payload}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            data = {}
+        # ServerChan returns ``data.error == "SUCCESS"`` after a successful
+        # push. Treating that truthy value as a failure makes the UI report
+        # an error even though WeChat already received the message.
+        error = str(data.get("error") or "").strip()
+        if error and error.upper() not in ("SUCCESS", "OK"):
+            raise RuntimeError(f"ServerChan 推送失败：{error}")

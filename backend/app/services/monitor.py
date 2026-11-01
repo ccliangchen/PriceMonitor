@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 
 from loguru import logger
 from sqlalchemy import select
@@ -21,14 +22,19 @@ from app.core.platforms import platform_label
 from app.core.price_engine import record_product_snapshot, save_price_snapshot
 from app.core.settings_store import load_settings
 from app.services.checkout import effective_quotes
-from app.services.notifications import (
-    send_listing_paused_alert,
-    send_login_required_alert,
-    send_new_low_notification,
-)
+from app.services.notifications import send_new_low_notification
 
 _poll_lock = asyncio.Lock()
 MAX_CONSECUTIVE_FAILURES = 3
+# Deep JD desktop probes can hit PC frequency control. Scheduled polling tries
+# one at most every six hours per listing; manual refresh always tries.
+_DEEP_PRICE_INTERVAL_SECONDS = 6 * 3600
+_last_deep_attempt: dict[int, float] = {}
+
+
+def _should_try_deep(listing_id: int) -> bool:
+    last = _last_deep_attempt.get(listing_id, 0.0)
+    return time.monotonic() - last >= _DEEP_PRICE_INTERVAL_SECONDS
 
 
 async def poll_all() -> None:
@@ -52,12 +58,12 @@ async def poll_all() -> None:
                 logger.exception("Polling product {} failed", product_id)
 
 
-async def poll_product(product_id: int) -> None:
+async def poll_product(product_id: int, deep: bool = False) -> None:
     async with _poll_lock:
-        await _poll_product(product_id)
+        await _poll_product(product_id, deep=deep)
 
 
-async def _poll_product(product_id: int) -> None:
+async def _poll_product(product_id: int, deep: bool = False) -> None:
     with session_scope() as db:
         product = db.get(Product, product_id)
         if product is None:
@@ -116,7 +122,19 @@ async def _poll_product(product_id: int) -> None:
                 continue
 
             try:
-                quote = await adapter.fetch_page_price(listing, account)
+                # Manual refresh may additionally try JD's desktop page to
+                # read coupon/subsidy labels absent from the mobile page.
+                # Scheduled polling also tries a deep probe at most every
+                # six hours; the adapter falls back to mobile on PC risk.
+                deep_fetch = getattr(adapter, "fetch_page_price_deep", None)
+                use_deep = deep or (
+                    deep_fetch is not None and _should_try_deep(listing.id)
+                )
+                if use_deep and deep_fetch is not None:
+                    _last_deep_attempt[listing.id] = time.monotonic()
+                    quote = await deep_fetch(listing, account)
+                else:
+                    quote = await adapter.fetch_page_price(listing, account)
                 save_price_snapshot(db, listing, quote)
                 job.status = "ok" if quote.status == "ok" else "failed"
                 job.error_message = quote.error
@@ -131,7 +149,6 @@ async def _poll_product(product_id: int) -> None:
                 else:
                     await _maybe_pause_after_failures(db, listing, quote.error)
             except LoginRequired as exc:
-                was_logged_in = account.status == "logged_in"
                 account.status = "needs_login"
                 save_price_snapshot(
                     db,
@@ -149,11 +166,8 @@ async def _poll_product(product_id: int) -> None:
                 job.error_message = str(exc)
                 job.finished_at = utcnow()
                 db.commit()
-                if was_logged_in:
-                    try:
-                        await send_login_required_alert(db, listing, listing.platform)
-                    except Exception:
-                        logger.exception("Failed to send login-required alert")
+                # Do not spend the limited WeChat push quota on login/pause
+                # events. The account and job status are visible in the app.
                 logger.warning("{} login required while polling listing {}", label, listing.id)
                 continue
             except CaptchaRequired as exc:
@@ -174,13 +188,11 @@ async def _poll_product(product_id: int) -> None:
                 job.error_message = str(exc)
                 job.finished_at = utcnow()
                 db.commit()
-                await send_listing_paused_alert(
-                    db,
-                    listing,
-                    "人工验证",
-                    f"{label}要求人工验证，监控已暂停。请在商品详情页完成验证。",
+                logger.warning(
+                    "{} captcha while polling listing {}; paused without push",
+                    label,
+                    listing.id,
                 )
-                logger.warning("{} captcha while polling listing {}", label, listing.id)
                 continue
             except ShopNotAllowed as exc:
                 listing.status = "paused"
@@ -188,13 +200,7 @@ async def _poll_product(product_id: int) -> None:
                 job.error_message = str(exc)
                 job.finished_at = utcnow()
                 db.commit()
-                await send_listing_paused_alert(
-                    db,
-                    listing,
-                    "店铺校验失败",
-                    str(exc),
-                )
-                logger.warning("Listing {} paused: {}", listing.id, exc)
+                logger.warning("Listing {} paused without push: {}", listing.id, exc)
                 continue
             except ParseError as exc:
                 job.status = "failed"
@@ -296,9 +302,11 @@ async def _maybe_pause_after_failures(
         return
     listing.status = "paused"
     db.commit()
-    await send_listing_paused_alert(
-        db,
-        listing,
-        "连续抓取失败",
-        f"连续 {failures} 次抓取失败，监控已暂停。最后一次错误：{error or '未知错误'}",
+    # Pause/failure alerts stay in the app logs. WeChat quota is reserved for
+    # genuine all-platform historical lows.
+    logger.warning(
+        "Listing {} paused after {} failures without push: {}",
+        listing.id,
+        failures,
+        error or "未知错误",
     )

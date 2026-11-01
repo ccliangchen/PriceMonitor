@@ -98,17 +98,24 @@ async def search_model(
     request: Request,
     db: DbSession,
 ) -> ModelSearchResponse:
-    account = ensure_platform_account(db, request.app.state.settings, "jd")
+    account = ensure_platform_account(db, request.app.state.settings, payload.platform)
+    label = platform_label(payload.platform)
     if account.status != "logged_in":
-        raise HTTPException(status_code=409, detail="请先登录京东，再搜索官方店商品")
+        raise HTTPException(status_code=409, detail=f"请先登录{label}，再搜索官方店商品")
 
     try:
-        result = await run_model_search(payload.query, account)
+        result = await run_model_search(payload.query, payload.platform, account)
+    except LoginRequired as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CaptchaRequired as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except ParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Model search failed")
-        raise HTTPException(status_code=502, detail=f"搜索官方店失败：{exc}") from exc
+        raise HTTPException(status_code=502, detail=f"搜索{label}官方店失败：{exc}") from exc
 
     return ModelSearchResponse(**result)
 

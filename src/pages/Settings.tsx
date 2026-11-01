@@ -6,10 +6,14 @@ import {
   CheckCircle2,
   Database,
   FolderOpen,
+  Info,
   KeyRound,
   Loader2,
+  RefreshCw,
+  RotateCcw,
   Save,
-  Send
+  Send,
+  ShieldAlert
 } from 'lucide-react'
 
 import { PageHeader } from '@/components/PageHeader'
@@ -84,6 +88,19 @@ export default function SettingsPage(): JSX.Element {
 
   const testPush = useMutation({
     mutationFn: testNotification
+  })
+  const openDataDir = useMutation({
+    mutationFn: () => window.api.openDataDir()
+  })
+  const checkUpdates = useMutation({
+    mutationFn: () => window.api.checkUpdates()
+  })
+  const restartOnboarding = useMutation({
+    mutationFn: () => updateSettings({ onboarding_completed: false }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['settings'], data)
+      void queryClient.invalidateQueries({ queryKey: ['settings'] })
+    }
   })
 
   const configured =
@@ -193,7 +210,10 @@ export default function SettingsPage(): JSX.Element {
                 onChange={(event) => setCloseToTray(event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300"
               />
-              关闭窗口时最小化到托盘（M3 接入开关）
+              关闭窗口时最小化到托盘
+              <span className="text-xs font-normal text-slate-400">
+                （取消后关闭窗口会直接退出应用）
+              </span>
             </label>
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input
@@ -202,7 +222,12 @@ export default function SettingsPage(): JSX.Element {
                 onChange={(event) => setAutoStart(event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300"
               />
-              开机自启（M3 接入 Electron 启动项）
+              开机自启
+              <span className="text-xs font-normal text-slate-400">
+                {appInfo.data?.preferences.autoStartSupported
+                  ? '（以 --hidden 启动，直接留在托盘）'
+                  : '（开发模式仅保存，安装版生效）'}
+              </span>
             </label>
           </div>
 
@@ -326,9 +351,115 @@ export default function SettingsPage(): JSX.Element {
                 {appInfo.data?.dataDir ?? '等待后端连接'}
               </span>
             </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => openDataDir.mutate()}
+                disabled={openDataDir.isPending}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {openDataDir.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <FolderOpen className="h-3.5 w-3.5" />
+                )}
+                打开数据目录
+              </button>
+              {openDataDir.data?.error ? (
+                <span className="text-xs text-rose-600">{openDataDir.data.error}</span>
+              ) : null}
+            </div>
             <p className="mt-3 text-xs leading-5 text-slate-500">
               SQLite、日志、浏览器登录态和临时文件都在这个目录；卸载默认保留。
             </p>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-5">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+              <Info className="h-4 w-4" />
+              关于与免责声明
+            </div>
+            <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+              <span>PriceMonitor</span>
+              <span className="font-mono">v{appInfo.data?.version ?? '0.1.0'}</span>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => restartOnboarding.mutate()}
+                disabled={restartOnboarding.isPending}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {restartOnboarding.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="h-3.5 w-3.5" />
+                )}
+                重新查看使用向导
+              </button>
+              <button
+                type="button"
+                onClick={() => checkUpdates.mutate()}
+                disabled={checkUpdates.isPending}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {checkUpdates.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                检查更新
+              </button>
+            </div>
+            {checkUpdates.data ? (
+              <div className="mt-2 text-xs leading-5">
+                {checkUpdates.data.status === 'available' ? (
+                  <div className="flex flex-wrap items-center gap-2 text-emerald-700">
+                    <span>发现新版本 v{checkUpdates.data.latestVersion}</span>
+                    {checkUpdates.data.url ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const url = checkUpdates.data?.url
+                          if (url) {
+                            window.open(url, '_blank')
+                          }
+                        }}
+                        className="font-medium underline underline-offset-2"
+                      >
+                        下载更新
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {checkUpdates.data.status === 'up-to-date' ? (
+                  <span className="text-slate-500">
+                    已是最新版本 v{checkUpdates.data.currentVersion}
+                  </span>
+                ) : null}
+                {checkUpdates.data.status === 'unconfigured' ? (
+                  <span className="text-slate-400">
+                    当前版本 v{checkUpdates.data.currentVersion} · 尚未配置发布更新源
+                  </span>
+                ) : null}
+                {checkUpdates.data.status === 'error' ? (
+                  <span className="text-rose-600">{checkUpdates.data.message ?? '检查更新失败'}</span>
+                ) : null}
+              </div>
+            ) : null}
+            {restartOnboarding.isError ? (
+              <p className="mt-2 text-xs text-rose-600">
+                {restartOnboarding.error instanceof Error
+                  ? restartOnboarding.error.message
+                  : '无法打开向导'}
+              </p>
+            ) : null}
+            <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>
+                本项目仅供个人学习与自用比价，不保证价格准确性。自动化访问电商平台可能违反平台用户协议并带来账号风险，请自行承担。应用不包含验证码绕过、自动下单、自动支付或个人微信机器人。
+              </p>
+            </div>
           </section>
         </div>
       </div>

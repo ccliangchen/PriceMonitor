@@ -1,4 +1,5 @@
 import type { JSX } from 'react'
+import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -8,10 +9,11 @@ import {
   Settings as SettingsIcon,
   UserRound
 } from 'lucide-react'
-import { Navigate, NavLink, Route, Routes } from 'react-router-dom'
+import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 
+import { Onboarding } from '@/components/Onboarding'
 import { StatusDot } from '@/components/StatusDot'
-import { apiRequest, getAppInfo } from '@/lib/api'
+import { apiRequest, fetchSettings, getAppInfo } from '@/lib/api'
 import { formatUptime } from '@/lib/format'
 import type { Health } from '@/lib/types'
 import Accounts from '@/pages/Accounts'
@@ -64,12 +66,48 @@ function HealthPill(): JSX.Element {
 }
 
 export default function App(): JSX.Element {
+  const navigate = useNavigate()
   const appInfo = useQuery({
     queryKey: ['app-info'],
     queryFn: getAppInfo,
     staleTime: Infinity,
     retry: false
   })
+  const health = useQuery({
+    queryKey: ['health'],
+    queryFn: () => apiRequest<Health>('GET', '/api/v1/health'),
+    retry: 1
+  })
+  const settings = useQuery({
+    queryKey: ['settings'],
+    queryFn: fetchSettings,
+    // The renderer starts before the Python sidecar finishes booting.
+    // Wait for /health so first-run onboarding is not silently skipped
+    // when the first settings request fails.
+    enabled: health.isSuccess,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 5000)
+  })
+
+  useEffect(() => {
+    if (!settings.data) {
+      return
+    }
+    void window.api?.applyPreferences({
+      autoStart: settings.data.auto_start,
+      closeToTray: settings.data.close_to_tray
+    })
+  }, [settings.data])
+
+  useEffect(() => {
+    window.api?.onNavigate((path) => {
+      if (path.startsWith('/')) {
+        navigate(path)
+      }
+    })
+  }, [navigate])
+
+  const needsOnboarding = settings.data?.onboarding_completed === false
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-900">
@@ -107,7 +145,7 @@ export default function App(): JSX.Element {
         </nav>
 
         <div className="border-t border-slate-100 px-5 py-4 text-[11px] text-slate-400">
-          <div>v{appInfo.data?.version ?? '0.1.0'} · M2 开发中</div>
+          <div>v{appInfo.data?.version ?? '0.1.0'} · 本地版</div>
           <div className="mt-1 truncate" title={appInfo.data?.dataDir}>
             {appInfo.data?.dataDir ?? '本地数据目录'}
           </div>
@@ -135,6 +173,14 @@ export default function App(): JSX.Element {
           </Routes>
         </main>
       </div>
+
+      {needsOnboarding ? (
+        <Onboarding
+          onFinished={() => {
+            void settings.refetch()
+          }}
+        />
+      ) : null}
     </div>
   )
 }

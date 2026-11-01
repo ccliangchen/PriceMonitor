@@ -4,7 +4,7 @@ import asyncio
 import re
 from contextlib import suppress
 from datetime import UTC, datetime
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from loguru import logger
 from playwright.async_api import Page
@@ -12,14 +12,20 @@ from playwright.async_api import Page
 from app.adapters.base import ListingInfo, LoginStatus, PriceQuote
 from app.adapters.taobao.parser import (
     GENERIC_TITLES,
+    TaobaoSearchItem,
+    TaobaoSkuVariant,
+    TaobaoStoreLink,
     choose_title,
     extract_embedded_price_cents,
     extract_embedded_shop_name,
     extract_item_id,
     extract_sku_id,
     extract_ssr_sku_info,
+    extract_taobao_sku_variants,
     parse_checkout_payable_cents,
     parse_product_page,
+    parse_shop_search_results,
+    parse_store_search_items,
 )
 from app.adapters.taobao.selectors import (
     COUPON_SELECTORS,
@@ -30,11 +36,14 @@ from app.adapters.taobao.selectors import (
 from app.core.exceptions import CaptchaRequired, LoginRequired, ParseError, ShopNotAllowed
 from app.core.models import Account, Listing
 from app.core.product_query import suggest_fields_from_title
+from app.core.shop_policy import brand_matches
 from app.services.browser import BrowserService
 
 TAOBAO_LOGIN_URL = "https://login.taobao.com/member/login.jhtml"
 TAOBAO_HOME_URL = "https://www.taobao.com/"
+TAOBAO_SHOP_SEARCH_URL = "https://shopsearch.taobao.com/search"
 LOGIN_TIMEOUT_SECONDS = 300
+SEARCH_DEGRADED_PHRASES = ("访问异常提示", "系统检测到当前访问存在异常")
 
 
 def has_login_cookies(cookies: list[dict]) -> bool:
@@ -55,49 +64,101 @@ class TaobaoAdapter:
             raise LoginRequired("请先登录淘宝")
         target = normalize_url(url)
         async with self.browser.session(account.profile_dir, headless=True) as page:
-            await self._goto(page, target)
-            final_url = page.url
-            title, body, price_texts, shop_texts, coupon_texts = (
-                await self._read_page_settled(page)
+            info, _html = await self._resolve_page(page, target)
+            return info
+
+    async def resolve_listing_with_skus(
+        self,
+        url: str,
+        account: Account | None = None,
+    ) -> tuple[ListingInfo, list[TaobaoSkuVariant]]:
+        """Resolve a listing and read its SKU options in a single page load."""
+        if account is None:
+            raise LoginRequired("请先登录淘宝")
+        target = normalize_url(url)
+        async with self.browser.session(account.profile_dir, headless=True) as page:
+            info, html = await self._resolve_page(page, target)
+            return info, extract_taobao_sku_variants(html, target)
+
+    async def find_official_store(
+        self,
+        brand: str,
+        account: Account,
+        keyword: str = "",
+    ) -> TaobaoStoreLink | None:
+        """Find an official Tmall flagship shop via Taobao's shop search."""
+        query = f"{brand}官方旗舰店 {keyword}".strip()
+        url = f"{TAOBAO_SHOP_SEARCH_URL}?app=shopsearch&q={quote(query)}"
+        async with self.browser.session(account.profile_dir, headless=True) as page:
+            html = await self._load_search_html(page, url)
+        stores = parse_shop_search_results(html)
+        for store in stores:
+            if "官方旗舰店" not in store.name:
+                continue
+            if brand_matches(brand, store.name):
+                return store
+        return None
+
+    async def search_store_items(
+        self,
+        store: TaobaoStoreLink,
+        keyword: str,
+        account: Account,
+    ) -> list[TaobaoSearchItem]:
+        """Search inside an official shop and return matching item cards."""
+        host = urlparse(store.url).netloc
+        if not host:
+            raise ParseError("无法识别淘宝官方店铺地址")
+        url = f"https://{host}/search.htm?search=y&keyword={quote(keyword)}"
+        async with self.browser.session(account.profile_dir, headless=True) as page:
+            html = await self._load_search_html(page, url)
+        return parse_store_search_items(html)
+
+    async def _resolve_page(self, page: Page, target: str) -> tuple[ListingInfo, str]:
+        await self._goto(page, target)
+        final_url = page.url
+        title, body, price_texts, shop_texts, coupon_texts = (
+            await self._read_page_settled(page)
+        )
+        self._assert_not_blocked(final_url, title, body)
+        if title in GENERIC_TITLES:
+            if "请登录" in body or "扫码登录" in body:
+                raise LoginRequired("淘宝登录态失效，请重新登录")
+            raise ParseError(
+                "商品页面没有加载完整（标题为空），请稍后重试；"
+                "如果反复出现，请到账号管理检查淘宝登录"
             )
-            self._assert_not_blocked(final_url, title, body)
-            if title in GENERIC_TITLES:
-                if "请登录" in body or "扫码登录" in body:
-                    raise LoginRequired("淘宝登录态失效，请重新登录")
-                raise ParseError(
-                    "商品页面没有加载完整（标题为空），请稍后重试；"
-                    "如果反复出现，请到账号管理检查淘宝登录"
-                )
-            html = await page.content()
-            embedded_shop = extract_embedded_shop_name(html)
-            if embedded_shop:
-                shop_texts = [embedded_shop, *shop_texts]
-            parsed = parse_product_page(
-                url=final_url,
-                title=title,
-                body_text=body + "\n" + "\n".join(coupon_texts),
-                price_texts=price_texts,
-                shop_texts=shop_texts,
-                embedded_price_cents=extract_embedded_price_cents(html),
-            )
-            if parsed.status == "login_required":
-                raise LoginRequired(parsed.error or "淘宝登录态失效，请重新登录")
-            if parsed.status == "captcha":
-                raise CaptchaRequired(parsed.error or "淘宝触发验证")
-            item_id = extract_item_id(final_url) or extract_item_id(target)
-            if item_id is None:
-                raise ParseError("请粘贴淘宝/天猫商品详情页链接，而不是搜索或店铺首页")
-            canonical_url = _listing_target(final_url)
-            product_title = parsed.title or title or f"淘宝商品 {item_id}"
-            detected_specs = parse_specs(product_title)
-            detected_specs.update(
-                {
-                    key: value
-                    for key, value in suggest_fields_from_title(product_title).items()
-                    if value
-                }
-            )
-            return ListingInfo(
+        html = await page.content()
+        embedded_shop = extract_embedded_shop_name(html)
+        if embedded_shop:
+            shop_texts = [embedded_shop, *shop_texts]
+        parsed = parse_product_page(
+            url=final_url,
+            title=title,
+            body_text=body + "\n" + "\n".join(coupon_texts),
+            price_texts=price_texts,
+            shop_texts=shop_texts,
+            embedded_price_cents=extract_embedded_price_cents(html),
+        )
+        if parsed.status == "login_required":
+            raise LoginRequired(parsed.error or "淘宝登录态失效，请重新登录")
+        if parsed.status == "captcha":
+            raise CaptchaRequired(parsed.error or "淘宝触发验证")
+        item_id = extract_item_id(final_url) or extract_item_id(target)
+        if item_id is None:
+            raise ParseError("请粘贴淘宝/天猫商品详情页链接，而不是搜索或店铺首页")
+        canonical_url = _listing_target(final_url)
+        product_title = parsed.title or title or f"淘宝商品 {item_id}"
+        detected_specs = parse_specs(product_title)
+        detected_specs.update(
+            {
+                key: value
+                for key, value in suggest_fields_from_title(product_title).items()
+                if value
+            }
+        )
+        return (
+            ListingInfo(
                 platform=self.platform,
                 url=canonical_url,
                 title=product_title,
@@ -107,7 +168,28 @@ class TaobaoAdapter:
                 platform_sku_id=extract_sku_id(final_url),
                 detected_specs=detected_specs,
                 evidence=parsed.evidence,
+            ),
+            html,
+        )
+
+    async def _load_search_html(self, page: Page, url: str) -> str:
+        await self._goto(page, url)
+        with suppress(Exception):
+            await page.wait_for_function(
+                "() => document.querySelectorAll('a[href*=\"item.htm\"]').length > 0",
+                timeout=8_000,
             )
+        title = await page.title()
+        try:
+            body = await page.locator("body").inner_text(timeout=10_000)
+        except Exception:
+            body = ""
+        self._assert_not_blocked(page.url, title, body)
+        if any(phrase in body for phrase in SEARCH_DEGRADED_PHRASES):
+            raise CaptchaRequired("淘宝搜索处于访问异常/降级状态，请稍后重试")
+        if "加载中..." in body and "所有宝贝" in body and "¥" not in body:
+            raise CaptchaRequired("淘宝搜索结果没有加载出来，可能触发限流，请稍后重试")
+        return await page.content()
 
     async def fetch_page_price(self, listing: Listing, account: Account) -> PriceQuote:
         target = _listing_target(listing.url)
@@ -386,10 +468,16 @@ class TaobaoAdapter:
 
     @staticmethod
     def _assert_not_blocked(url: str, title: str, body: str) -> None:
+        # A blocked page often redirects to login with a ``_____tmd_____``
+        # marker in its redirectURL. Treat that as an expired login first so
+        # the UI tells the user to sign in again instead of showing a slider
+        # error they cannot resolve on a login page.
+        if "login.taobao.com" in url or "login.tmall.com" in url:
+            raise LoginRequired(
+                "淘宝登录态失效或触发安全验证，请到账号管理重新登录后再试"
+            )
         if "_____tmd_____" in url or "/punish" in url or "验证码拦截" in title:
             raise CaptchaRequired("淘宝触发验证，请打开验证页完成滑块")
-        if "login.taobao.com" in url or "login.tmall.com" in url:
-            raise LoginRequired("淘宝登录态失效，请重新登录")
         if any(phrase in body for phrase in ("请按住滑块", "拖动滑块", "滑动验证", "安全验证")):
             raise CaptchaRequired("淘宝触发滑块验证，请打开验证页完成")
         if any(phrase in title or phrase in body for phrase in ("访问频繁", "系统繁忙", "稍后再试")):

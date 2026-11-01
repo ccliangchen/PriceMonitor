@@ -5,7 +5,7 @@ from sqlalchemy import select
 from app.adapters.base import PriceQuote
 from app.core.db import session_scope
 from app.core.exceptions import ParseError
-from app.core.models import Account, Listing, ProductPriceSnapshot
+from app.core.models import Account, Listing, Notification, ProductPriceSnapshot
 from app.services.monitor import _poll_product
 
 
@@ -149,22 +149,16 @@ async def test_three_consecutive_failures_pause_listing(client, monkeypatch):
         lambda platform: FailingAdapter(),
     )
 
-    async def no_alert(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(
-        "app.services.monitor.send_listing_paused_alert",
-        no_alert,
-    )
-
     for _ in range(3):
         await _poll_product(product_id)
 
     with session_scope() as db:
         listing = db.scalars(select(Listing)).first()
+        notifications = db.scalars(select(Notification)).all()
 
     assert listing is not None
     assert listing.status == "paused"
+    assert notifications == []
 
 
 async def test_low_confidence_quote_is_not_used_for_product_snapshot(client, monkeypatch):

@@ -12,7 +12,14 @@ from app.services.notifications import build_new_low_message, format_cents
 @respx.mock
 async def test_serverchan_send_success():
     route = respx.post("https://sctapi.ftqq.com/TESTKEY.send").mock(
-        return_value=httpx.Response(200, json={"code": 0, "data": {}})
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "message": "",
+                "data": {"error": "SUCCESS", "errno": 0},
+            },
+        )
     )
 
     await ServerChanNotifier("TESTKEY").send(
@@ -24,6 +31,21 @@ async def test_serverchan_send_success():
     body = request.content.decode("utf-8")
     assert "title=" in body
     assert "desp=" in body
+
+
+@respx.mock
+async def test_serverchan_send_data_error_is_failure():
+    respx.post("https://sctapi.ftqq.com/TESTKEY.send").mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": 0, "data": {"error": "invalid key"}},
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="ServerChan 推送失败"):
+        await ServerChanNotifier("TESTKEY").send(
+            NotificationMessage(title="测试", body="正文")
+        )
 
 
 @respx.mock

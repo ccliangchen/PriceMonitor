@@ -30,18 +30,26 @@
 - M2 核心功能已完成（2026-11-01；真实商品长期回归持续）：
   - 淘宝/天猫适配器已接入：扫码登录、链接解析（含 `m.tb.cn` 短链）、天猫官方旗舰店校验、页面价 + 可见券、验证/登录失效识别。已用真实 iQOO Neo11 至尊版天猫链接验证标题、店铺、规格和价格抓取。
   - 跨平台：同一 Product 可绑定京东和淘宝 Listing（`POST /products/{id}/listings`），全平台最低价、史低与推送只认全平台最低，UI 标注平台；详情页价格曲线按 Listing 分线显示，粗线为全平台最低。
-  - 连续 3 次抓取失败自动暂停 Listing 并推送告警；登录过期会推送提醒；验证/限流会暂停并提示人工处理；详情页支持手动暂停/恢复链接（恢复时清除失败记录）。
+  - 连续 3 次抓取失败自动暂停 Listing，只在应用内提示/任务日志记录，**不推送微信**；登录过期、验证/限流会暂停并提示人工处理，也不推送微信；详情页支持手动暂停/恢复链接（恢复时清除失败记录）。微信推送配额只用于全平台史低和用户主动发起的测试通知。
   - 价格以**页面预估价为主**：自动结算已停用；商品详情页保留“手动校准实付”按钮作为可选的实付核对工具，打开可见浏览器读取实付款，**不提交订单**。史低拆分为“页面史低”（自动更新）和“实付史低”（仅手动校准后更新，并显示校准时间）。
   - 页面解析已能识别“补贴后/券后价/到手价/优惠前/闪电加补/满减/政府补贴”，真实天猫商品页面抓到 ¥3,194.10，与用户在浏览器看到的价格一致；淘宝 `__ICE_APP_CONTEXT__.sku2info` 作为 SKU 价格兜底。降级页（“访问异常提示”）不写入价格。
+- M3 发布准备进行中（2026-11-01）：
+  - 首次启动三步向导：免责声明/账号风险确认、ServerChan SendKey 配置与测试推送、登录/添加商品入口；完成后可“重新查看使用向导”。
+  - Electron 桌面设置联动：`auto_start` / `close_to_tray` 由后端设置同步到主进程；安装版注册 `--hidden` 开机启动，开发模式只保存；关闭窗口按设置隐藏到托盘或退出；托盘菜单增加“打开设置”。
+  - PyInstaller `--onedir --noconsole` 后端 spec 已接入（`backend/packaging/price-monitor-backend.spec`），本地构建的打包后 sidecar 已通过 health/settings/shutdown 冒烟；NSIS 安装包已生成（约 175 MB，未签名）。
+  - 更新检查：安装版读取打包的 `resources/update.json` HTTPS 清单，设置页显示新版本/下载链接；未配置或开发模式只显示当前版本。发布工作流支持 `UPDATE_MANIFEST_URL` 仓库变量。
+  - README 已补齐安装、使用、价格口径、FAQ、构建/发布、更新清单和免责声明；新增首次向导截图。GitHub Actions release workflow 在 `v*` tag 上构建安装包、SHA256 和 Release。
+  - 待办：干净 Windows 11 虚拟机验收；代码签名；v0.1.0 tag/Release 由用户发布。
 - 已实现：扫码登录/登录检查、官方店与品牌校验、页面价 + 可见券、内嵌 `jdPrice` 解析、30 分钟调度、价格快照/史低、ServerChan 推送、型号/规格搜索、SKU 匹配、双店绑定、验证/限流暂停与人工验证、手动刷新冷却、任务日志。
 - 已知限制：
   - 京东全站搜索和部分店铺页会被频控/验证；型号搜索优先用店铺型号映射 + 商品页 SKU 数据，仍有失败可能，需要人工验证或稍后重试。
-  - 官方店铺型号映射目前覆盖 iQOO 部分型号（`core/store_registry.py`）；其他品牌/型号需继续补充。按型号搜索目前只支持京东。
+  - 京东官方店铺型号映射目前覆盖 iQOO 部分型号（`core/store_registry.py`）；其他品牌/型号需继续补充。京东按型号搜索依赖这张映射表；淘宝按型号搜索已改为“店铺搜索 → 店内搜索”的动态流程，不依赖固定店铺域名。
   - 部分商品价格做了字体混淆，必须从页面内嵌 `priceFloor.ext.jdPrice` 取价。
   - 规格可能不存在（如 iQOO Neo11 至尊版没有 12+512），UI 会展示可用规格并允许放弃。
   - 淘宝/天猫风控比京东更严格，商品详情页通常必须先登录；长时间高频访问可能触发滑块或限流，需要人工完成验证。
   - 京东移动端“立即购买”经常跳到 `trade.m.jd.com/common/limit.html` 风控页；手动校准实付已做桌面页重试，但仍可能失败。失败时继续使用页面预估价；实付史低保持上一次校准结果并标注时间。
   - 页面价仍可能与结算应付价存在差异（跨店券、会员价、地址运费、支付优惠、未领取补贴等）；因此“实付史低”只作为可选手动校验，不自动更新。
+  - 京东移动版商品页经常只返回京东价，不含「国补后价 / 已享平台券」；桌面页可能被 PC 频控。应用在手动刷新时额外尝试桌面页，失败自动回退移动页；此时页面预估价可能仍高于浏览器实际到手价，可用“手动校准实付”核对。
   - 淘宝页面结构尚未经过大量真实商品回归，解析器优先使用内嵌 `shopName`、`price`/`promotionPrice` 与可见“券后/到手价”文本。
 
 ## 2. 已确定的产品决策
@@ -74,7 +82,7 @@
 | 表单 | react-hook-form + zod |
 | 提示 | sonner |
 | 主进程日志 | electron-log |
-| 自动更新 | electron-updater（M3 可选） |
+| 更新检查 | 手动读取 HTTPS 更新清单（M3）；自动下载安装留到 M4 |
 
 ### Python sidecar
 
@@ -121,7 +129,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │ Electron 主进程                                              │
 │  ├─ BrowserWindow（加载 React 构建产物）                      │
-│  ├─ Tray / 开机自启 / 单实例 / 自动更新                        │
+│  ├─ Tray / 开机自启 / 单实例 / 更新检查                        │
 │  ├─ IPC API 代理（渲染进程不直接访问网络）                     │
 │  └─ spawn Python sidecar                                     │
 └──────────────────────────┬──────────────────────────────────┘
@@ -185,7 +193,8 @@ price-monitor/
 │  │  ├─ sidecar.ts         # spawn / 健康检查 / 重启 / 关闭
 │  │  ├─ ipc.ts             # IPC API 代理与允许列表
 │  │  ├─ tray.ts            # 托盘菜单
-│  │  ├─ updater.ts         # electron-updater
+│  │  ├─ preferences.ts     # 自启 / 关闭到托盘设置
+│  │  ├─ updates.ts         # HTTPS 更新清单检查
 │  │  └─ paths.ts           # userData / 日志 / 资源路径
 │  └─ preload/
 │     └─ index.ts           # contextBridge: window.api
@@ -201,6 +210,7 @@ price-monitor/
 │  │  └─ Logs.tsx
 │  ├─ components/
 │  │  ├─ ui/                # shadcn/ui
+│  │  ├─ Onboarding.tsx     # 首次启动向导
 │  │  ├─ PriceChart.tsx
 │  │  ├─ ProductCard.tsx
 │  │  ├─ PlatformBadge.tsx
@@ -265,8 +275,11 @@ price-monitor/
 │  │  └─ test_notifiers.py
 │  └─ packaging/
 │     └─ price-monitor-backend.spec
-├─ resources/               # 应用图标、托盘图标
+├─ resources/               # 应用图标、托盘图标、update.json
 ├─ build/                   # 安装包资源
+├─ scripts/
+│  └─ build-backend.mjs     # PyInstaller 构建入口（本地 conda / CI venv 通用）
+├─ docs/screenshots/        # README 截图
 └─ .github/workflows/
    ├─ ci.yml
    └─ release.yml
@@ -404,7 +417,7 @@ price-monitor/
 
 ### settings
 
-`key TEXT PRIMARY KEY, value JSON, updated_at DATETIME`。存轮询间隔、结算校准间隔、通知渠道、自启开关、关闭到托盘、数据保留天数等。敏感值（SendKey、PushPlus token）存 Windows Credential Manager（keyring），不存 SQLite 明文。
+`key TEXT PRIMARY KEY, value JSON, updated_at DATETIME`。存轮询间隔、结算校准间隔、通知渠道、自启开关、关闭到托盘、首次向导完成标记（`onboarding_completed`）、数据保留天数等。敏感值（SendKey、PushPlus token）存 Windows Credential Manager（keyring），不存 SQLite 明文。
 
 ## 7. 价格口径与史低规则
 
@@ -430,7 +443,7 @@ effective_price = 新鲜的 page_estimated，否则 checkout_payable
 2. 取每个 Listing 最新且未过期的有效价：优先 2 小时内的页面快照；页面快照过期时才回退到 6 小时内的结算快照。
 3. 对同一 Product 的所有有效 Listing 取 `min(effective_price)`，写 `product_price_snapshots`，记录 `lowest_platform` 和 `coverage`。
 4. 只有至少一个 Listing 成功时才写汇总快照；全部失败则只记 `job_runs`。
-5. 某个平台失败时该平台不参与比较，`coverage` 标记；连续 3 次失败暂停该平台并推送告警。
+5. 某个平台失败时该平台不参与比较，`coverage` 标记；连续 3 次失败暂停该平台，只在应用内提示和任务日志记录，不推送微信。
 
 ### 7.3 结算校准触发
 
@@ -453,7 +466,8 @@ effective_price = 新鲜的 page_estimated，否则 checkout_payable
   - 手动校准实付新低 → `淘宝实付新低 ¥3,194.10（实付结算价）`。
 - 推送内容：商品名 + SKU、全平台最低价、平台、原史低、降幅、券明细摘要、商品链接、抓取时间、价格来源（页面预估价/实付结算价）。
 - 去重：同一 Product 在 6 小时内不重复推送相同价格；价格回升后再次跌破才重新计算。
-- 异常过滤：价格必须 `> 0`；有至少 5 条历史后，落在近 30 天中位数 `0.3x–3x` 之外视为异常，丢弃并记日志；连续 3 次异常触发健康告警。
+- 异常过滤：价格必须 `> 0`；有至少 5 条历史后，落在近 30 天中位数 `0.3x–3x` 之外视为异常，丢弃并记日志；连续 3 次异常在应用内提示，不推送微信。
+- **推送配额**：ServerChan 免费额度有限，微信推送只用于全平台史低（页面预估价/实付结算价）和用户主动点击的测试通知；暂停、登录失效、验证码、连续失败、店铺校验失败一律不推送。
 - 只有全平台最低价触发推送；某个平台单独降价但另一平台更便宜时不推送，详情页仍记录。
 
 ## 8. 平台适配器契约
@@ -540,6 +554,8 @@ class PlatformAdapter(Protocol):
 - 型号/规格不存在时，搜索接口返回可用规格；UI 展示可用规格与「放弃监测该商品」，不得静默选错 SKU。
 - 价格置信度：页面有“到手价”标签 = `high`；无“到手价”但无适用券 = `high`；有券但无“到手价” = `low`（不采纳）。
 - 更深促销字段：读取 `window._itemInfo.promov2[].pis[].customtag.p` 和 `seckill.miaoShaPrice`，作为无“到手价”时的最终价兜底；`priceFloor.ext.jdPrice` 仍是页面价基础。
+- 京东最终价标签：识别「国补后价 / 国补价 / 补贴后价 / 券后价 / 到手价 / 实付价」；同时解析「已享 / 可再享」里的「满4000减550」「领后减¥500」等明细。页面直接显示最终价时优先采用；没有最终价但有「已享」明细时按可见优惠计算。
+- 京东移动版商品页经常只返回 `priceFloor.ext.jdPrice`（例如 4899），桌面页才显示「国补后价」（例如 3848.78）和「已享」优惠。手动刷新总会额外尝试桌面商品页；定时轮询每 6 小时最多尝试一次桌面页，其余轮次走移动版，避免 PC 频控。桌面页被 `pc-frequent-pro` 拦截时自动回退移动版，不绕过验证。
 
 ### 8.5 淘宝/天猫实现细节（M2）
 
@@ -550,7 +566,8 @@ class PlatformAdapter(Protocol):
 - 价格解析：优先“券后价/到手价/折后价/优惠价/促销价/活动价”标签；页面价用“原价/划线价/专柜价/日常价”或可见 `¥` 金额；HTML 内嵌 `promotionPrice`/`promoPrice`/`salePrice`/`priceText`/`price` 作为回退。
 - 淘宝没有京东自营类型；`shop_type` 只会是 `official_flagship` / `unknown` / `other`。
 - 结算校准：打开可见浏览器、自动尝试点击“立即购买”，轮询确认订单页的“实付款/应付/合计”；不点击“提交订单”或支付按钮。遇到滑块/登录页时等待用户处理或报错。
-- 淘宝未实现按型号搜索，UI 明确提示“淘宝/天猫请切换到粘贴链接”。
+- 淘宝按型号搜索：先访问 `shopsearch.taobao.com` 的店铺搜索（`app=shopsearch`），解析店铺卡片第一行作为店名，只接受含“官方旗舰店”且品牌一致的店铺；再访问该店 `search.htm?search=y&keyword=<型号 版本>` 搜索店内商品；最后打开商品页，从 `__ICE_APP_CONTEXT__.skuBase` 解析颜色/存储/套餐和 SKU ID。店铺页搜索被风控时，会回退到店铺搜索卡片里已经返回的样品的匹配项，再尝试商品页。任何一步遇到登录失效/滑块都抛 `LoginRequired`/`CaptchaRequired`，不绕过。
+- 淘宝搜索结果页的店铺卡片 anchor 包含店铺名、评分、粉丝和若干样品商品；店名只取第一条非空文本，避免样品标题里的“官方旗舰店”误把专卖店判成官方店。
 - 价格置信度：页面明确显示“补贴后/券后价/到手价”等最终价，且 URL 有 `skuId`、SSR `sku2info` 有对应 SKU = `high`；否则 `low`，不采纳。
 - SSR 完整价格：`sku2info.<skuId>.subPrice` 是所选 SKU 的券后最终价（`priceTitle=券后/补贴后`），优先于页面可见文本；`sku2info.<skuId>.price` 是优惠前价，`quantity/quantityText/limit` 是库存/限购。
 
@@ -572,7 +589,7 @@ class PlatformAdapter(Protocol):
 - 默认轮询间隔 30 分钟，可配置 10–180 分钟；每次加 ±10% 随机抖动。
 - 每平台并发 1，全局并发 2；同一账号的浏览器上下文串行使用。
 - 每个平台一批任务共用一个浏览器会话：启动 → 依次处理该平台所有到期 Listing → 关闭，减少启动开销和风控暴露。
-- 失败退避：1 分钟 → 5 分钟 → 15 分钟；连续 3 次失败暂停该平台，托盘/推送告警，用户手动恢复。
+- 失败退避：1 分钟 → 5 分钟 → 15 分钟；连续 3 次失败暂停该平台，仅在应用内提示/任务日志记录，不推送微信，用户手动恢复。
 - 手动刷新走同一队列，不绕过节流。
 - 自动结算已从调度器移除；只保留详情页手动校准（每个 Listing 600 秒冷却），复用浏览器串行锁。
 
@@ -583,7 +600,7 @@ class PlatformAdapter(Protocol):
 - 页面操作之间加入 1–3 秒随机延迟；滚动、移动鼠标；不并行开多个标签页。
 - 浏览器配置目录按账号隔离；同一目录同时只允许一个上下文。
 - 登录：弹出可见 Edge 窗口 → 用户扫码/手动登录 → 检测到登录成功 → 保存 profile → 关闭窗口。**不保存账号密码。**
-- 会话检查：每日一次，或抓取遇到登录页时；过期则 `status='needs_login'`，托盘 + 推送提醒。
+- 会话检查：每日一次，或抓取遇到登录页时；过期则 `status='needs_login'`，在账号页和任务日志提示，不推送微信。
 - 清除登录态：先关闭浏览器，再删除对应 profile 目录。
 
 ### 9.3 风控底线
@@ -616,7 +633,7 @@ class PlatformAdapter(Protocol):
 | POST | `/products/{id}/listings` | 绑定一个平台 Listing 到已有 Product |
 | POST | `/products/{id}/checkout-calibrate` | 对商品下所有可校准 Listing 启动结算校准 |
 | POST | `/listings/resolve` | 根据链接自动识别京东/淘宝，返回 ListingInfo |
-| POST | `/listings/search-model` | 按型号/规格搜索京东官方店，返回 SKU 候选与可用规格 |
+| POST | `/listings/search-model` | 按型号/规格搜索京东或淘宝/天猫官方店（`platform=jd/taobao`），返回 SKU 候选与可用规格 |
 | POST | `/listings/{id}/checkout-calibrate` | 打开可见浏览器读取该 Listing 的结算实付款 |
 | POST | `/listings/{id}/verify` | 打开平台验证页，人工完成后恢复 Listing |
 | POST | `/listings` | 绑定 Listing 到 Product |
@@ -641,7 +658,7 @@ class PlatformAdapter(Protocol):
 
 1. **仪表盘**：商品卡片（图片、名称、SKU、当前全平台最低价 + 平台、史低、最后检查时间、平台状态）；顶部显示下次轮询、暂停/恢复、添加商品。
 2. **商品详情**：当前最低价与平台、页面史低/实付史低、价格曲线（各平台线 + 全平台最低粗线）、平台卡片（店铺、页面预估价、实付结算价、券明细、最后检查、错误；不显示页面标价和置信度标签）、任务历史、手动刷新/校准。
-3. **添加商品向导**：粘贴链接 → 解析 → 展示**官方旗舰店/官方自营**证据（badge、店铺名、卖家主体、品牌匹配）→ 校验不通过则不允许添加 → 用户指定 SKU（内存/存储必填，颜色可选）→ 绑定已有 Product 或新建 → 完成。
+3. **添加商品向导**：按型号/规格搜索京东或淘宝/天猫官方店，或粘贴链接 → 解析 → 展示**官方旗舰店/官方自营**证据（badge、店铺名、卖家主体、品牌匹配）→ 校验不通过则不允许添加 → 用户指定 SKU（内存/存储必填，颜色可选）→ 绑定已有 Product 或新建 → 完成。
 4. **账号管理**：京东/淘宝卡片、登录状态、最后登录时间、重新登录、清除登录态、风险提示。
 5. **设置**：轮询间隔、结算校准间隔、通知渠道与测试、开机自启、关闭到托盘、数据保留、日志/数据目录、关于与免责声明。
 6. **日志/健康**：最近任务、失败原因、平台暂停状态、导出日志。
@@ -654,12 +671,14 @@ UI 全中文；金额格式 `¥7,499`；时间显示本地时区；空状态给�
 - 启动时把 `userData`、`sessionData`、`crashDumps` 指到 `D:\PriceMonitorData`，确保 SQLite、日志、浏览器登录态和 Electron 缓存都不落 C 盘；可用 `PRICE_MONITOR_DATA_DIR` 覆盖，D 盘不可用时回退默认路径。
 - BrowserWindow：1280×860，最小 1024×700；`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`。
 - 生产用 HashRouter，避免 `file://` 路由问题；开发加载 Vite dev server。
-- 关闭按钮默认隐藏到托盘（可设置）；托盘菜单：打开主窗口、立即刷新、暂停/恢复监测、设置、退出。
-- 开机自启：`app.setLoginItemSettings({ openAtLogin, args: ['--hidden'] })`；带 `--hidden` 启动时不显示窗口。
+- 关闭按钮默认隐藏到托盘；`close_to_tray=false` 时关闭窗口直接退出。设置由渲染进程保存后通过 IPC 同步主进程，主进程启动时也会从 sidecar 读取一次。
+- 托盘菜单：打开主窗口、打开设置、退出；点击“打开设置”会显示窗口并通过 `app:navigate` 事件跳转。
+- 开机自启：安装版 `app.setLoginItemSettings({ openAtLogin, path, args: ['--hidden'] })`；带 `--hidden` 启动时不显示窗口。开发模式只保存设置，不注册错误的可执行文件。
 - 阻止窗口内导航；外部链接用 `shell.openExternal` 打开；`setWindowOpenHandler` 拒绝新窗口。
 - CSP：`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'none'`（渲染进程不直接联网）。
-- IPC 代理：只允许 `/api/v1/` 前缀和 GET/POST/PATCH/DELETE；对请求体大小做限制。
-- 自动更新：electron-updater + GitHub Releases；启动 10 秒后检查一次，设置页可手动检查；开发模式跳过。
+- IPC 代理：只允许 `/api/v1/` 前缀和 GET/POST/PATCH/PUT/DELETE（`PUT` 用于 ServerChan SendKey 保存）；对请求体大小做限制。用户可见的拒绝/失败提示统一用中文。
+- 更新检查：`electron/main/updates.ts` 读取 `resources/update.json` 的 HTTPS `manifest_url`，设置页手动检查并打开下载链接；未配置时显示当前版本。自动下载/安装留到 M4。
+- 数据目录：设置页“打开数据目录”通过 `shell.openPath` 打开；首次向导和“设置 → 关于”可重新进入。
 - 退出顺序：标记 `isQuitting` → 调用 sidecar `/shutdown` → 等待 5 秒 → `taskkill /T /F` 兜底 → 退出。
 
 ## 13. 打包与发布
@@ -688,8 +707,9 @@ npm run lint
 
 # 构建
 npm run build:renderer
-npm run build:backend      # 内部调用 pricemonitor 环境内的 pyinstaller.exe
+npm run build:backend      # scripts/build-backend.mjs -> python -m PyInstaller
 npm run dist               # electron-builder NSIS
+npm run dist:dir           # 只生成 release/win-unpacked，调试打包问题
 ```
 
 开发模式下，Electron 主进程 spawn `D:\Anaconda\envs\pricemonitor\python.exe -m app.main ...`；打包后的应用 spawn `resources/backend/price-monitor-backend.exe`。两条路径都必须读取同一个 `--data-dir`。
@@ -704,11 +724,15 @@ VS Code 扩展宿主 / Claude Code 可能注入 `ELECTRON_RUN_AS_NODE=1`，这�
 
 ### 打包细节
 
-- PyInstaller：`--onedir --noconsole`，`--collect-all playwright`，不打包浏览器；运行时检测系统 Edge 路径，缺失时提示安装 Edge。
-- electron-builder：`extraResources` 把 `backend/dist/price-monitor-backend/` 放到 `resources/backend/`；NSIS per-user 安装，创建桌面/开始菜单快捷方式；`build/installer.nsh` 把默认安装目录设为 `D:\PriceMonitor\App`（用户仍可在安装时改路径）；卸载默认保留 `D:\PriceMonitorData\`。
-- 图标：`resources/icon.ico`（应用）、`resources/tray.ico`（托盘）。
+- PyInstaller：`backend/packaging/price-monitor-backend.spec` 使用 `--onedir --noconsole`，`collect_all("playwright")` 打包驱动但不打包浏览器；运行时使用系统 Edge。打包后的 sidecar 已用真实 exe 做过 health/settings/shutdown 冒烟。
+- electron-builder：`extraResources` 把 `backend/dist/price-monitor-backend/` 放到 `resources/backend/`；`electronDist: node_modules/electron/dist` 复用已安装 Electron，避免重复下载；NSIS per-user 安装，创建桌面/开始菜单快捷方式；`build/installer.nsh` 在 D 盘存在时把默认安装目录设为 `D:\PriceMonitor\App`（用户仍可改），无 D 盘时使用默认目录；卸载默认保留 `D:\PriceMonitorData\`。
+- 图标：`resources/icon.ico`（应用）、`resources/tray.png`（托盘）。
 - 版本号：`package.json`、`backend/app/__init__.py`、安装包保持一致；关于页显示。
-- CI（GitHub Actions windows-latest）：安装 Node 24 + Python 3.14 + uv；跑 `npm ci`；Python 侧用 `uv venv` + `uv pip install -e "backend[dev]"` 建临时环境（不依赖本机 conda），再跑 lint、typecheck、pytest、构建 renderer、构建 backend；不打真实平台。Release workflow 在 tag 时构建安装包并上传 GitHub Releases。
+- 更新清单：`resources/update.json` 的 `manifest_url` 在打包前配置；release workflow 可用仓库变量 `UPDATE_MANIFEST_URL` 写入。
+- CI（GitHub Actions windows-latest）：安装 Node 24 + Python 3.14 + uv；跑 `npm ci --ignore-scripts`；Python 侧用 `uv venv` + `uv pip install -e "backend[dev]"` 建临时环境（不依赖本机 conda），再跑 lint、typecheck、pytest、构建 renderer；不打真实平台。
+- Release workflow（`.github/workflows/release.yml`）：`v*` tag 校验版本后 `npm ci`、构建 renderer、用临时 venv 跑 `scripts/build-backend.mjs`、electron-builder NSIS、生成 SHA256 并上传 GitHub Release。
+- 国内网络可设 `ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/` 加速 NSIS/winCodeSign 下载。
+- 本地已生成 `release/PriceMonitor-0.1.0-setup.exe`（约 175 MB，未签名）；发布前仍需干净 Windows 11 虚拟机验收。
 - 发布前在干净 Windows 11 虚拟机测试：安装、首次启动、扫码登录、添加商品、等待轮询、推送、托盘、开机自启、卸载。
 
 ## 14. 测试策略
@@ -743,15 +767,17 @@ VS Code 扩展宿主 / Claude Code 可能注入 `ELECTRON_RUN_AS_NODE=1`，这�
 - [x] 结算校准（京东 + 淘宝）：改为页面价为主，自动结算停用；保留手动可见窗口校准，作为可选实付核对。
 - [x] 页面史低 / 实付史低分离；置信度只保留 high/low，高置信度统一显示“页面预估价”，低置信度不采纳。
 - [x] 淘宝 `__ICE_APP_CONTEXT__.sku2info.<skuId>.subPrice` 券后最终价 + 库存/限购；京东 `promov2`/`seckill` 促销 JSON 兜底；降级页拒绝写入。
-- [ ] 淘宝/天猫真实商品长期回归与选择器 fixtures 扩充（持续维护）；按型号搜索目前仅京东（体验增强，M3/M4 再补）。
+- [x] 淘宝/天猫按型号搜索（店铺搜索 → 店内搜索 → 商品 SKU）；真实商品长期回归与 fixtures 持续扩充。
 - [x] 页面新低“先校准、后推送”不再适用：产品决策改为页面预估价主口径、自动结算停用；高置信度页面新低直接推送。
 
-### M3 — 可发布（约 1–2 周）
+### M3 — 可发布（进行中，2026-11-01）
 
-- 首次启动向导、免责声明、通知测试。
-- 安装包（electron-builder + PyInstaller）、开机自启、关闭到托盘、单实例、更新检查。
-- README（截图、安装、使用、FAQ、免责声明）、MIT LICENSE、GitHub Actions、v0.1.0 Release。
-- 干净 Windows 11 虚拟机验收。
+- [x] 首次启动向导、免责声明、通知测试。
+- [x] 安装包（electron-builder + PyInstaller）、开机自启、关闭到托盘、单实例、HTTPS 更新清单检查。
+- [x] README（首次向导截图、安装、使用、FAQ、免责声明）、MIT LICENSE、CI + release workflow。
+- [x] 本地打包验证：PyInstaller sidecar health/settings/shutdown 冒烟；NSIS `PriceMonitor-0.1.0-setup.exe` 生成；未签名。
+- [ ] 干净 Windows 11 虚拟机验收（安装、向导、登录、轮询、推送、托盘、自启、升级、卸载）。
+- [ ] v0.1.0 tag/Release 发布（需要远程仓库与代码签名证书后执行）。
 
 ### M4 — 第二阶段
 
@@ -782,7 +808,7 @@ VS Code 扩展宿主 / Claude Code 可能注入 `ELECTRON_RUN_AS_NODE=1`，这�
 |---|---|
 | 平台 DOM 改版导致解析失败 | 解析器与选择器分离；fixtures 回归；失败日志 + 脱敏 DOM 摘要；快速热修 |
 | 京东价格字体混淆 | 从 HTML 内嵌 `priceFloor.ext.jdPrice` 取价；可见文本仅作回退；解析器单测覆盖 |
-| 京东桌面页/店铺页频控 | 自动转移动版商品页；店铺型号映射 + 商品页 SKU 解析；请求间隔 20–40 秒；验证/限流时暂停并人工验证 |
+| 京东桌面页/店铺页频控 | 定时轮询自动转移动版商品页；手动刷新额外尝试桌面页读取国补/平台券最终价，失败自动回退；店铺型号映射 + 商品页 SKU 解析；请求间隔 20–40 秒；验证/限流时暂停并人工验证 |
 | 淘宝/天猫登录墙与滑块 | 商品页需登录；`unb` cookie 检测；可见窗口人工扫码/滑块；失败即暂停并提示，不绕过 |
 | 结算预览被平台风控拦截 | 京东移动端 `limit.html` 自动重试桌面页；仍失败时提示用户手动进入确认页；只读实付款、不提交订单；失败继续用页面预估价 |
 | 型号规格不存在 | 搜索接口返回可用规格；UI 必须展示并允许“放弃监测该商品”，不得静默选错 SKU |
@@ -805,7 +831,7 @@ VS Code 扩展宿主 / Claude Code 可能注入 `ELECTRON_RUN_AS_NODE=1`，这�
 - 是否需要同一平台多账号切换？
 - 是否需要维护品牌官方店铺白名单（同一品牌可能存在多个官方旗舰店/官方自营主体）？
 - 颜色是否作为独立 SKU 维度（默认不作为必填）？
-- 自动更新放在 v0.1 还是 M4？
+- 更新检查已放在 M3（HTTPS 清单）；自动下载/安装更新放在 M4。
 - 是否购买 Windows 代码签名证书？
 - 价格历史保留多久（默认永久，SQLite 体积很小）？
 

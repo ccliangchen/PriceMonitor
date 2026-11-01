@@ -1,8 +1,10 @@
 appId: com.pricemonitor.app
 productName: PriceMonitor
+artifactName: PriceMonitor-${version}-setup.${ext}
 directories:
   buildResources: build
   output: release
+electronDist: node_modules/electron/dist
 files:
   - out/**/*
   - resources/**/*
@@ -10,10 +12,12 @@ files:
 extraResources:
   - from: backend/dist/price-monitor-backend
     to: backend
+compression: normal
 win:
   target:
     - nsis
   icon: resources/icon.ico
+  executableName: PriceMonitor
 nsis:
   include: build/installer.nsh
   oneClick: false
@@ -21,4 +25,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  shortcutName: PriceMonitor
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
   deleteAppDataOnUninstall: false

@@ -11,6 +11,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "auto_start": False,
     "notification_channel": "serverchan",
     "history_retention_days": 0,
+    "onboarding_completed": False,
 }
 
 

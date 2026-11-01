@@ -15,6 +15,7 @@ export interface AppSettings {
   auto_start: boolean
   notification_channel: NotificationChannel
   history_retention_days: number
+  onboarding_completed: boolean
   notification_configured: boolean
 }
 
@@ -172,13 +173,18 @@ export interface SkuVariantOption {
   url: string
 }
 
+export type SearchPlatform = 'jd' | 'taobao'
+
 export interface ModelSearchCandidate {
+  platform: SearchPlatform
   store_name: string
   store_type: string
   model_url: string | null
   title: string | null
   requested_available: boolean
   matched_sku_id: string | null
+  platform_item_id: string | null
+  shop_evidence: Record<string, string>
   variants: SkuVariantOption[]
   error: string | null
 }

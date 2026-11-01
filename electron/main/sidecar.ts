@@ -20,6 +20,11 @@ export interface SidecarInfo {
   baseUrl: string
 }
 
+export interface ShellSettings {
+  auto_start?: boolean
+  close_to_tray?: boolean
+}
+
 export class Sidecar {
   private child: ChildProcess | null = null
   private port = 0
@@ -43,6 +48,26 @@ export class Sidecar {
     this.spawnProcess()
     await this.waitForHealth()
     this.restartCount = 0
+  }
+
+  async fetchShellSettings(): Promise<ShellSettings | null> {
+    if (!this.baseUrl) {
+      return null
+    }
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/settings`, {
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(3000)
+      })
+      if (!response.ok) {
+        log.warn(`failed to read shell settings: HTTP ${response.status}`)
+        return null
+      }
+      return (await response.json()) as ShellSettings
+    } catch (error) {
+      log.warn('failed to read shell settings', error)
+      return null
+    }
   }
 
   async stop(): Promise<void> {
@@ -172,14 +197,14 @@ export class Sidecar {
           log.info('sidecar health check passed')
           return
         }
-        lastError = new Error(`health returned HTTP ${response.status}`)
+        lastError = new Error(`健康检查返回 HTTP ${response.status}`)
       } catch (error) {
         lastError = error
       }
       await sleep(500)
     }
 
-    throw new Error(`Sidecar did not become healthy: ${String(lastError)}`)
+    throw new Error(`后端服务未在超时时间内就绪：${String(lastError)}`)
   }
 
   private handleExit(code: number | null, signal: NodeJS.Signals | null): void {

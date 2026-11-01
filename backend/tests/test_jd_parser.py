@@ -197,6 +197,44 @@ def test_mobile_page_body_is_parsed():
     assert parsed.status == "ok"
 
 
+def test_guobu_final_price_label_wins_over_jd_price():
+    parsed = parse_product_page(
+        url="https://item.jd.com/10237128678205.html",
+        title="vivo iQOO Neo12 12GB+512GB 官方标配",
+        body_text=(
+            "京东价 ￥4899.00 国补后价 ￥3848.78 "
+            "已享：国家补贴 领后减¥500 满4000减550 "
+            "可再享：赠品 最高返192京豆"
+        ),
+        price_texts=["￥4899.00"],
+        shop_texts=["iQOO官方旗舰店"],
+    )
+
+    assert parsed.page_price_cents == 489900
+    assert parsed.estimated_price_cents == 384878
+    assert parsed.coupon_discount_cents == 105022
+    assert parsed.confidence == "high"
+    raws = " ".join(item["raw"] for item in parsed.coupon_breakdown)
+    assert "领后减" in raws
+    assert "满4000减550" in raws
+
+
+def test_applied_coupons_compute_final_price_without_final_label():
+    parsed = parse_product_page(
+        url="https://item.jd.com/10237128678205.html",
+        title="vivo iQOO Neo12 12GB+512GB 官方标配",
+        body_text=(
+            "京东价 ￥4899.00 已享：国家补贴 领后减¥500 满4000减550"
+        ),
+        price_texts=["￥4899.00"],
+        shop_texts=["iQOO官方旗舰店"],
+    )
+
+    assert parsed.page_price_cents == 489900
+    assert parsed.estimated_price_cents == 384900
+    assert parsed.confidence == "high"
+
+
 def test_embedded_promotion_and_seckill_price():
     html = (
         '"promov2":[{"pis":[{"customtag":"{\\"p\\":\\"3498.00\\"}"}]}],'

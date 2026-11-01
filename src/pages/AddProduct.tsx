@@ -445,7 +445,7 @@ export default function AddProduct(): JSX.Element {
     <div>
       <PageHeader
         title="添加商品"
-        description="输入型号和规格自动匹配京东官方店；淘宝/天猫可粘贴商品链接。"
+        description="输入型号和规格自动匹配京东或淘宝/天猫官方店；也可以直接粘贴商品链接。"
       />
 
       <div className="mb-5 inline-flex rounded-lg bg-slate-100 p-1">

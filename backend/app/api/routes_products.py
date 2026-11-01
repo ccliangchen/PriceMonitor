@@ -130,7 +130,7 @@ def refresh_product(
         )
     _last_manual_refresh[product_id] = now
 
-    background_tasks.add_task(poll_product, product_id)
+    background_tasks.add_task(poll_product, product_id, True)
     return {"queued": True}
 
 

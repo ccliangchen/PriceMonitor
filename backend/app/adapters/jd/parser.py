@@ -10,6 +10,10 @@ from app.adapters.base import PriceConfidence, QuoteStatus, ShopType
 
 PRICE_NUMBER = r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)"
 TO_PRICE_RE = re.compile(rf"到手价[^\d]{{0,12}}{PRICE_NUMBER}")
+FINAL_PRICE_LABEL_RE = re.compile(
+    rf"(?:预估到手价|预计到手价|国补后价|国补价|补贴后价|券后价|到手价|实付价)"
+    rf"[^\d]{{0,16}}{PRICE_NUMBER}"
+)
 JD_PRICE_RE = re.compile(rf"京东价[^\d]{{0,12}}{PRICE_NUMBER}")
 ANY_PRICE_RE = re.compile(rf"(?:¥|￥)\s*{PRICE_NUMBER}")
 COUPON_THRESHOLD_RE = re.compile(r"满\s*([0-9][0-9,]*)\s*减\s*([0-9][0-9,]*)")
@@ -17,6 +21,10 @@ COUPON_AMOUNT_RE = re.compile(r"([0-9][0-9,]*)\s*元(?:优惠券|券)")
 PROMOTION_AMOUNT_RE = re.compile(
     r"(?:立减|直降|补贴|返现)[^\d]{0,6}([0-9][0-9,]*)\s*元"
 )
+CLAIM_DISCOUNT_RE = re.compile(
+    rf"(?:领后减|领券后减)[^\d]{{0,6}}(?:¥|￥)?\s*{PRICE_NUMBER}"
+)
+APPLIED_DISCOUNT_SECTION_RE = re.compile(r"(?:已享|可再享)[：:]")
 NOISE_PRICE_WORDS = ("月", "白条", "定金", "首付", "每期", "分期")
 NOISE_PRICE_RE = re.compile(r"\d+\s*期")
 EMBEDDED_PRICE_RE = re.compile(
@@ -145,6 +153,27 @@ def _parse_coupons(text: str, page_price_cents: int | None) -> tuple[int, list[d
         breakdown.append(
             {
                 "type": "立减/补贴",
+                "raw": raw,
+                "threshold_cents": None,
+                "amount_cents": amount,
+                "applied": applicable,
+            }
+        )
+        if applicable:
+            total += amount
+
+    for match in CLAIM_DISCOUNT_RE.finditer(text):
+        raw = match.group(0)
+        if raw in seen:
+            continue
+        seen.add(raw)
+        amount = parse_price_cents(match.group(1))
+        if amount is None:
+            continue
+        applicable = page_price_cents is not None and page_price_cents > amount
+        breakdown.append(
+            {
+                "type": "领后减",
                 "raw": raw,
                 "threshold_cents": None,
                 "amount_cents": amount,
@@ -336,9 +365,11 @@ def parse_product_page(
             error="京东登录态失效，请重新登录",
         )
 
-    to_match = TO_PRICE_RE.search(body_text)
+    final_match = FINAL_PRICE_LABEL_RE.search(body_text)
     jd_match = JD_PRICE_RE.search(body_text)
-    estimated_from_label = parse_price_cents(to_match.group(1)) if to_match else None
+    estimated_from_label = (
+        parse_price_cents(final_match.group(1)) if final_match else None
+    )
     jd_price = parse_price_cents(jd_match.group(1)) if jd_match else None
     page_price = jd_price or _first_plausible_price(prices)
     if page_price is None:
@@ -378,6 +409,10 @@ def parse_product_page(
 
     coupon_total, breakdown = _parse_coupons(body_text, page_price)
     estimated = max(0, page_price - coupon_total)
+    # If the page explicitly labels an "已享" section, its visible coupons
+    # have already been applied; otherwise coupon arithmetic is only an
+    # estimate and stays low confidence.
+    applied_section = bool(APPLIED_DISCOUNT_SECTION_RE.search(body_text))
     return ParsedProduct(
         title=title,
         shop_name=shop_name,
@@ -387,9 +422,7 @@ def parse_product_page(
         estimated_price_cents=estimated,
         coupon_discount_cents=coupon_total,
         coupon_breakdown=breakdown,
-        # Without an explicit "到手价", only a page price with no applicable
-        # coupon is treated as final. Coupon arithmetic is low confidence.
-        confidence="high" if coupon_total == 0 else "low",
+        confidence="high" if coupon_total == 0 or applied_section else "low",
         status="ok",
     )
 

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qs, urlparse
 
+from bs4 import BeautifulSoup
+
 from app.adapters.base import PriceConfidence, QuoteStatus, ShopType
 
 PRICE_NUMBER = r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)"
@@ -130,6 +132,244 @@ class ParsedTaobaoProduct:
     confidence: PriceConfidence | None = None
     status: QuoteStatus = "ok"
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class TaobaoSearchItem:
+    item_id: str
+    title: str
+    url: str
+
+
+@dataclass(frozen=True)
+class TaobaoStoreLink:
+    name: str
+    url: str
+    sample_items: tuple[TaobaoSearchItem, ...] = ()
+
+
+@dataclass(frozen=True)
+class TaobaoSkuVariant:
+    color: str
+    spec: str
+    sku_id: str
+    url: str
+    ram_gb: int | None
+    storage_gb: int | None
+
+
+SHOP_HOST_RE = re.compile(r"^shop\d+\.(?:taobao|tmall)\.com$")
+ITEM_LINK_RE = re.compile(r"(?:detail\.tmall\.com|item\.taobao\.com)/item\.htm")
+CAPACITY_RE = re.compile(r"(\d{1,3})\s*(TB|T|GB|G)\b", re.IGNORECASE)
+COMBINED_CAPACITY_RE = re.compile(
+    r"(\d{1,3})\s*(?:GB|G)\s*[+＋]\s*(\d{1,4})\s*(?:GB|G)",
+    re.IGNORECASE,
+)
+
+
+def _absolute_href(href: str) -> str:
+    value = href.strip()
+    if value.startswith("//"):
+        return f"https:{value}"
+    if value.startswith("item.htm"):
+        return f"https://detail.tmall.com/{value}"
+    if value.startswith("/"):
+        return f"https://detail.tmall.com{value}"
+    return value
+
+
+def _first_line(text: str) -> str:
+    return next((line.strip() for line in text.splitlines() if line.strip()), "")
+
+
+def parse_shop_search_results(html: str) -> list[TaobaoStoreLink]:
+    """Extract shop cards from Taobao's ``tab=shop`` search results.
+
+    The anchor for a shop card wraps the shop name, score, fan count and a
+    handful of sample items. Only the first non-empty line is the shop name;
+    using the whole text would let a sample product title's "官方旗舰店"
+    wording leak into shop admission.
+    """
+    soup = BeautifulSoup(html or "", "lxml")
+    results: list[TaobaoStoreLink] = []
+    seen: set[str] = set()
+    for anchor in soup.find_all("a", href=True):
+        url = _absolute_href(str(anchor.get("href") or ""))
+        if not SHOP_HOST_RE.fullmatch(urlparse(url).netloc):
+            continue
+        name = _first_line(anchor.get_text("\n", strip=True))
+        name = re.sub(r"\s+", " ", name).strip()
+        if not name or len(name) > 80 or "进入店铺" in name:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        results.append(
+            TaobaoStoreLink(
+                name=name,
+                url=url,
+                sample_items=tuple(parse_store_search_items(str(anchor))),
+            )
+        )
+    return results
+
+
+def _clean_item_title(text: str) -> str:
+    value = re.sub(r"\s+", " ", text or "").strip()
+    value = re.split(r"[¥￥]", value, maxsplit=1)[0].strip()
+    return value[:250]
+
+
+def parse_store_search_items(html: str) -> list[TaobaoSearchItem]:
+    """Extract item cards from a Tmall/Taobao store search page."""
+    soup = BeautifulSoup(html or "", "lxml")
+    by_item: dict[str, TaobaoSearchItem] = {}
+    for anchor in soup.find_all("a", href=True):
+        url = _absolute_href(str(anchor.get("href") or ""))
+        if not ITEM_LINK_RE.search(url):
+            continue
+        item_id = extract_item_id(url)
+        if item_id is None:
+            continue
+        title = _clean_item_title(
+            anchor.get_text(" ", strip=True) or str(anchor.get("title") or "")
+        )
+        if len(title) < 6:
+            continue
+        existing = by_item.get(item_id)
+        if existing is None or len(title) > len(existing.title):
+            by_item[item_id] = TaobaoSearchItem(
+                item_id=item_id,
+                title=title,
+                url=url,
+            )
+    return list(by_item.values())
+
+
+def _context_res(html: str) -> dict:
+    context = extract_ice_context(html) or {}
+    loader = context.get("loaderData") or {}
+    home = loader.get("home") or {}
+    data = home.get("data") or {}
+    result = data.get("res") or {}
+    return result if isinstance(result, dict) else {}
+
+
+def _capacity_gb(text: str) -> int | None:
+    match = CAPACITY_RE.search(text or "")
+    if match is None:
+        return None
+    value = int(match.group(1))
+    return value * 1024 if match.group(2).upper().startswith("T") else value
+
+
+def _find_ram_storage(
+    values: dict[str, str],
+    prop_names: dict[str, str],
+) -> tuple[int | None, int | None]:
+    for value in values.values():
+        match = COMBINED_CAPACITY_RE.search(value)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+
+    ram: int | None = None
+    storage: int | None = None
+    for pid, value in values.items():
+        name = prop_names.get(pid, "")
+        capacity = _capacity_gb(value)
+        if capacity is None:
+            continue
+        if ram is None and any(word in name for word in ("内存", "运行")):
+            ram = capacity
+        elif storage is None and any(word in name for word in ("存储", "容量")):
+            storage = capacity
+    return ram, storage
+
+
+def extract_taobao_sku_variants(
+    html: str,
+    item_url: str = "",
+) -> list[TaobaoSkuVariant]:
+    """Build SKU options from the item page's SSR ``skuBase`` data.
+
+    ``skuBase.props`` maps property ids (color, storage, package) to names,
+    while ``skuBase.skus`` gives each SKU's property path. Prices are read
+    separately by ``extract_ssr_sku_info`` for the selected SKU.
+    """
+    result = _context_res(html)
+    sku_base = result.get("skuBase") or {}
+    props = sku_base.get("props") if isinstance(sku_base, dict) else None
+    skus = sku_base.get("skus") if isinstance(sku_base, dict) else None
+    if not isinstance(props, list) or not isinstance(skus, list):
+        return []
+
+    prop_names: dict[str, str] = {}
+    prop_values: dict[str, dict[str, str]] = {}
+    for prop in props:
+        if not isinstance(prop, dict):
+            continue
+        pid = str(prop.get("pid") or "")
+        if not pid:
+            continue
+        prop_names[pid] = str(prop.get("name") or "")
+        values: dict[str, str] = {}
+        value_map = prop.get("valueMap")
+        if isinstance(value_map, dict):
+            for vid, value in value_map.items():
+                if isinstance(value, dict):
+                    name = str(value.get("name") or "").strip()
+                    if name:
+                        values[str(vid)] = name
+        for value in prop.get("values") or []:
+            if not isinstance(value, dict):
+                continue
+            vid = str(value.get("vid") or "")
+            name = str(value.get("name") or "").strip()
+            if vid and name:
+                values[vid] = name
+        prop_values[pid] = values
+
+    item_id = extract_item_id(item_url) or str((result.get("item") or {}).get("itemId") or "")
+    host = "detail.tmall.com" if "tmall.com" in item_url else "item.taobao.com"
+    variants: list[TaobaoSkuVariant] = []
+    seen: set[str] = set()
+    for sku in skus:
+        if not isinstance(sku, dict):
+            continue
+        sku_id = str(sku.get("skuId") or "")
+        if not sku_id or sku_id in seen:
+            continue
+        sku_values: dict[str, str] = {}
+        for pair in str(sku.get("propPath") or "").split(";"):
+            if ":" not in pair:
+                continue
+            pid, vid = pair.split(":", 1)
+            name = prop_values.get(pid, {}).get(vid)
+            if name:
+                sku_values[pid] = name
+
+        color = ""
+        spec = ""
+        for pid, value in sku_values.items():
+            name = prop_names.get(pid, "")
+            if not color and "颜色" in name:
+                color = value
+            if not spec and any(word in name for word in ("套餐", "版本")):
+                spec = value
+        ram, storage = _find_ram_storage(sku_values, prop_names)
+        url = f"https://{host}/item.htm?id={item_id}&skuId={sku_id}" if item_id else ""
+        seen.add(sku_id)
+        variants.append(
+            TaobaoSkuVariant(
+                color=color,
+                spec=spec,
+                sku_id=sku_id,
+                url=url,
+                ram_gb=ram,
+                storage_gb=storage,
+            )
+        )
+    return variants
 
 
 def parse_price_cents(text: str) -> int | None:
