@@ -61,6 +61,10 @@ export default function Dashboard(): JSX.Element {
   })
 
   const jd = accounts.data?.find((account) => account.platform === 'jd')
+  const taobao = accounts.data?.find((account) => account.platform === 'taobao')
+  const loggedCount = [jd, taobao].filter(
+    (account) => account?.status === 'logged_in'
+  ).length
   const productCount = products.data?.length ?? 0
   const hasProducts = productCount > 0
   const dataDir = health.data?.data_dir ?? appInfo.data?.dataDir ?? '—'
@@ -105,13 +109,11 @@ export default function Dashboard(): JSX.Element {
           hint={hasProducts ? '点击卡片查看价格曲线' : '还没有添加商品'}
         />
         <StatCard
-          label="京东账号"
-          value={jd ? statusLabel(jd.status) : '加载中'}
-          hint={
-            jd?.status === 'logged_in'
-              ? '登录态已保存在本机'
-              : '需要扫码登录后才能抓取'
-          }
+          label="平台账号"
+          value={`${loggedCount} / 2 已登录`}
+          hint={`京东：${jd ? statusLabel(jd.status) : '加载中'} · 淘宝：${
+            taobao ? statusLabel(taobao.status) : '加载中'
+          }`}
         />
         <StatCard
           label="轮询间隔"
@@ -141,7 +143,7 @@ export default function Dashboard(): JSX.Element {
             <div>
               <h2 className="text-lg font-semibold">添加第一个商品</h2>
               <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-300">
-                先登录京东，再粘贴商品详情页链接。系统只允许官方旗舰店与京东官方自营，并会按品牌再次校验。
+                先登录平台账号，再粘贴京东或淘宝/天猫商品链接。系统只允许官方旗舰店与京东官方自营，并会按品牌再次校验；同一 SKU 会自动跨平台比价。
               </p>
             </div>
           </div>
@@ -151,7 +153,7 @@ export default function Dashboard(): JSX.Element {
               className="rounded-xl border border-white/10 bg-white/5 p-4 transition hover:bg-white/10"
             >
               <div className="text-xs font-medium text-emerald-300">第一步</div>
-              <div className="mt-1 text-sm font-semibold">登录京东</div>
+              <div className="mt-1 text-sm font-semibold">登录京东 / 淘宝</div>
               <div className="mt-1 text-xs text-slate-400">扫码登录，不保存密码</div>
             </Link>
             <Link
@@ -197,7 +199,7 @@ export default function Dashboard(): JSX.Element {
       <div className="mt-6 flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm leading-6 text-emerald-800">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
         <p>
-          只监控官方旗舰店和京东官方自营；店铺类型或品牌不一致时不会启用。价格来自页面展示与可见券估算，最终以下单结算为准。
+          只监控天猫/京东官方旗舰店和京东官方自营；店铺类型或品牌不一致时不会启用。同一商品可绑定多个平台，史低与推送只认全平台最低价，价格来自页面展示与可见券估算，最终以下单结算为准。
         </p>
       </div>
     </div>

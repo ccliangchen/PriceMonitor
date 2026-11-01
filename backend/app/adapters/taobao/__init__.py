@@ -1,0 +1,1 @@
+"""Taobao/Tmall platform adapter."""

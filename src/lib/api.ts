@@ -4,6 +4,8 @@ import type {
   AppSettings,
   Health,
   JobRun,
+  ListingPayload,
+  ListingPriceSeries,
   ModelSearchResponse,
   NotificationStatus,
   PricePoint,
@@ -50,16 +52,16 @@ export function fetchAccounts(): Promise<Account[]> {
   return apiRequest<Account[]>('GET', '/api/v1/accounts')
 }
 
-export function startJdLogin(): Promise<{ started: boolean; message: string }> {
-  return apiRequest('POST', '/api/v1/accounts/jd/login')
+export function startLogin(platform: string): Promise<{ started: boolean; message: string }> {
+  return apiRequest('POST', `/api/v1/accounts/${platform}/login`)
 }
 
-export function logoutJd(): Promise<Account> {
-  return apiRequest<Account>('POST', '/api/v1/accounts/jd/logout')
+export function logoutAccount(platform: string): Promise<Account> {
+  return apiRequest<Account>('POST', `/api/v1/accounts/${platform}/logout`)
 }
 
-export function checkJd(): Promise<Account> {
-  return apiRequest<Account>('POST', '/api/v1/accounts/jd/check')
+export function checkAccount(platform: string): Promise<Account> {
+  return apiRequest<Account>('POST', `/api/v1/accounts/${platform}/check`)
 }
 
 export function resolveListing(url: string): Promise<ListingResolve> {
@@ -76,6 +78,13 @@ export function createProduct(payload: ProductCreatePayload): Promise<ProductSum
   return apiRequest<ProductSummary>('POST', '/api/v1/products', payload)
 }
 
+export function bindListing(
+  productId: number,
+  listing: ListingPayload
+): Promise<ProductDetail> {
+  return apiRequest<ProductDetail>('POST', `/api/v1/products/${productId}/listings`, listing)
+}
+
 export function fetchProducts(): Promise<ProductSummary[]> {
   return apiRequest<ProductSummary[]>('GET', '/api/v1/products')
 }
@@ -88,6 +97,16 @@ export function fetchPrices(productId: number, range: PriceRange): Promise<Price
   return apiRequest<PricePoint[]>('GET', `/api/v1/products/${productId}/prices?range=${range}`)
 }
 
+export function fetchListingPrices(
+  productId: number,
+  range: PriceRange
+): Promise<ListingPriceSeries[]> {
+  return apiRequest<ListingPriceSeries[]>(
+    'GET',
+    `/api/v1/products/${productId}/listing-prices?range=${range}`
+  )
+}
+
 export function refreshProduct(productId: number): Promise<{ queued: boolean }> {
   return apiRequest('POST', `/api/v1/products/${productId}/refresh`)
 }
@@ -96,6 +115,25 @@ export function verifyListing(
   listingId: number
 ): Promise<{ started: boolean; message: string }> {
   return apiRequest('POST', `/api/v1/listings/${listingId}/verify`)
+}
+
+export function calibrateListing(
+  listingId: number
+): Promise<{ started: boolean; message: string }> {
+  return apiRequest('POST', `/api/v1/listings/${listingId}/checkout-calibrate`)
+}
+
+export function updateListing(
+  listingId: number,
+  status: 'active' | 'paused'
+): Promise<{ id: number; status: string }> {
+  return apiRequest('PATCH', `/api/v1/listings/${listingId}`, { status })
+}
+
+export function calibrateProduct(
+  productId: number
+): Promise<{ started: number; listing_ids: number[]; message: string }> {
+  return apiRequest('POST', `/api/v1/products/${productId}/checkout-calibrate`)
 }
 
 export async function deleteProduct(productId: number): Promise<void> {

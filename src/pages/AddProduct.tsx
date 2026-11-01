@@ -12,9 +12,15 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import ModelSearch from '@/components/ModelSearch'
 import { PageHeader } from '@/components/PageHeader'
-import { createProduct, fetchAccounts, resolveListing } from '@/lib/api'
+import {
+  bindListing,
+  createProduct,
+  fetchAccounts,
+  fetchProducts,
+  resolveListing
+} from '@/lib/api'
 import { shopTypeLabel } from '@/lib/format'
-import type { ListingResolve, ProductCreatePayload } from '@/lib/types'
+import type { ListingPayload, ListingResolve, ProductCreatePayload } from '@/lib/types'
 
 const inputClass =
   'mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200'
@@ -23,8 +29,30 @@ const labelClass = 'text-sm font-medium text-slate-700'
 const EVIDENCE_LABELS: Record<string, string> = {
   self_operated: '官方自营标识',
   official_badge: '官方旗舰店标识',
+  badge_text: '官方标识文本',
   brand_match: '品牌一致',
   shop_brand: '店铺品牌'
+}
+
+function detectPlatform(url: string): 'jd' | 'taobao' | null {
+  const value = url.trim().toLowerCase()
+  if (!value) {
+    return null
+  }
+  if (
+    value.includes('jd.com') ||
+    value.includes('3.cn')
+  ) {
+    return 'jd'
+  }
+  if (
+    value.includes('taobao.com') ||
+    value.includes('tmall.com') ||
+    value.includes('tb.cn')
+  ) {
+    return 'taobao'
+  }
+  return null
 }
 
 function UrlAddProduct(): JSX.Element {
@@ -35,10 +63,21 @@ function UrlAddProduct(): JSX.Element {
     queryFn: fetchAccounts,
     refetchInterval: 3000
   })
-  const jd = accounts.data?.find((account) => account.platform === 'jd')
-  const loggedIn = jd?.status === 'logged_in'
+  const products = useQuery({
+    queryKey: ['products'],
+    queryFn: fetchProducts
+  })
 
   const [url, setUrl] = useState('')
+  const requiredPlatform = detectPlatform(url)
+  const platformAccount = accounts.data?.find(
+    (account) => account.platform === requiredPlatform
+  )
+  const loggedIn =
+    requiredPlatform === null
+      ? Boolean(url.trim())
+      : platformAccount?.status === 'logged_in'
+  const loginLabel = requiredPlatform === 'taobao' ? '淘宝' : '京东'
   const [resolved, setResolved] = useState<ListingResolve | null>(null)
   const [name, setName] = useState('')
   const [brand, setBrand] = useState('')
@@ -48,6 +87,7 @@ function UrlAddProduct(): JSX.Element {
   const [storage, setStorage] = useState('')
   const [color, setColor] = useState('')
   const [notes, setNotes] = useState('')
+  const [targetProductId, setTargetProductId] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
 
   const resolveMutation = useMutation({
@@ -55,13 +95,14 @@ function UrlAddProduct(): JSX.Element {
     onSuccess: (data) => {
       setResolved(data)
       setName(data.title)
-      setBrand('')
-      setModel('')
-      setVariant('')
+      setBrand(data.detected_specs.brand ?? '')
+      setModel(data.detected_specs.model ?? '')
+      setVariant(data.detected_specs.variant ?? '')
       setRam(data.detected_specs.ram_gb ?? '')
       setStorage(data.detected_specs.storage_gb ?? '')
       setColor('')
       setNotes('')
+      setTargetProductId('')
       setFormError(null)
     }
   })
@@ -70,6 +111,16 @@ function UrlAddProduct(): JSX.Element {
     mutationFn: createProduct,
     onSuccess: (product) => {
       void queryClient.invalidateQueries({ queryKey: ['products'] })
+      navigate(`/products/${product.id}`)
+    }
+  })
+
+  const bindMutation = useMutation({
+    mutationFn: (payload: { productId: number; listing: ListingPayload }) =>
+      bindListing(payload.productId, payload.listing),
+    onSuccess: (product) => {
+      void queryClient.invalidateQueries({ queryKey: ['products'] })
+      void queryClient.invalidateQueries({ queryKey: ['product', product.id] })
       navigate(`/products/${product.id}`)
     }
   })
@@ -89,16 +140,35 @@ function UrlAddProduct(): JSX.Element {
     }
     const ramNumber = Number(ram)
     const storageNumber = Number(storage)
+    if (resolved.decision !== 'allowed') {
+      setFormError('该链接未通过官方店铺校验，不能添加')
+      return
+    }
+
+    const listing: ListingPayload = {
+      platform: resolved.platform as 'jd' | 'taobao',
+      url: resolved.url,
+      title: resolved.title,
+      shop_name: resolved.shop_name,
+      shop_type: resolved.shop_type,
+      platform_item_id: resolved.platform_item_id,
+      platform_sku_id: resolved.platform_sku_id,
+      shop_evidence: resolved.evidence,
+      detected_specs: resolved.detected_specs
+    }
+
+    if (targetProductId) {
+      setFormError(null)
+      bindMutation.mutate({ productId: Number(targetProductId), listing })
+      return
+    }
+
     if (!name.trim() || !brand.trim() || !model.trim()) {
       setFormError('请填写商品名、品牌和型号')
       return
     }
     if (!ramNumber || !storageNumber || ramNumber <= 0 || storageNumber <= 0) {
       setFormError('请填写内存和存储容量（例如 12 和 512）')
-      return
-    }
-    if (resolved.decision !== 'allowed') {
-      setFormError('该链接未通过官方店铺校验，不能添加')
       return
     }
 
@@ -111,17 +181,7 @@ function UrlAddProduct(): JSX.Element {
       storage_gb: storageNumber,
       color: color.trim() || null,
       notes: notes.trim() || null,
-      listing: {
-        platform: 'jd',
-        url: resolved.url,
-        title: resolved.title,
-        shop_name: resolved.shop_name,
-        shop_type: resolved.shop_type,
-        platform_item_id: resolved.platform_item_id,
-        platform_sku_id: resolved.platform_sku_id,
-        shop_evidence: resolved.evidence,
-        detected_specs: resolved.detected_specs
-      }
+      listing
     }
     setFormError(null)
     createMutation.mutate(payload)
@@ -137,11 +197,11 @@ function UrlAddProduct(): JSX.Element {
 
   return (
     <div>
-      {!loggedIn ? (
+      {requiredPlatform && !loggedIn ? (
         <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
-            需要先登录京东账号才能解析商品链接。
+            需要先登录{loginLabel}账号才能解析该商品链接。
             <Link to="/accounts" className="ml-2 font-medium underline">
               去账号管理登录
             </Link>
@@ -152,13 +212,13 @@ function UrlAddProduct(): JSX.Element {
       <form onSubmit={handleResolve} className="rounded-2xl border border-slate-200 bg-white p-5">
         <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
           <Link2 className="h-4 w-4" />
-          京东商品链接
+          京东 / 淘宝商品链接
         </div>
         <div className="mt-3 flex gap-2">
           <input
             value={url}
             onChange={(event) => setUrl(event.target.value)}
-            placeholder="https://item.jd.com/100012043978.html"
+            placeholder="https://item.jd.com/100012043978.html 或 https://detail.tmall.com/item.htm?id=..."
             className={inputClass}
           />
           <button
@@ -175,7 +235,8 @@ function UrlAddProduct(): JSX.Element {
           </button>
         </div>
         <p className="mt-2 text-xs leading-5 text-slate-500">
-          支持 item.jd.com、item.m.jd.com、u.jd.com、3.cn。桌面商品页会自动改用移动版抓取，避开 PC 频控。
+          支持京东（item.jd.com、u.jd.com、3.cn）和淘宝/天猫（item.taobao.com、detail.tmall.com、m.tb.cn）。
+          桌面京东页会自动改用移动版抓取；淘宝需要先登录账号。
         </p>
         {resolveMutation.isError ? (
           <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
@@ -220,7 +281,7 @@ function UrlAddProduct(): JSX.Element {
             {resolved.decision !== 'allowed' ? (
               <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                只有官方旗舰店和京东官方自营可以通过。请换一个官方店铺的商品链接。
+                只有天猫官方旗舰店、京东官方旗舰店和京东官方自营可以通过。请换一个官方店铺的商品链接。
               </div>
             ) : null}
           </section>
@@ -229,7 +290,33 @@ function UrlAddProduct(): JSX.Element {
             onSubmit={handleCreate}
             className="rounded-2xl border border-slate-200 bg-white p-5"
           >
-            <div className="text-sm font-semibold text-slate-900">SKU 规格</div>
+            <div className="text-sm font-semibold text-slate-900">绑定商品</div>
+            <label className={`${labelClass} mt-4 block`}>
+              目标商品
+              <select
+                value={targetProductId}
+                onChange={(event) => setTargetProductId(event.target.value)}
+                className={inputClass}
+              >
+                <option value="">新建商品</option>
+                {products.data?.map((product) => (
+                  <option key={product.id} value={product.id}>
+                    {product.name}（{product.ram_gb}GB+{product.storage_gb}GB）
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="mt-2 text-xs leading-5 text-slate-500">
+              如果这是已有商品在另一个平台的链接，选择已有商品即可合并到同一个商品，价格取全平台最低。
+            </p>
+
+            {targetProductId ? (
+              <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-600">
+                将把该链接绑定到已有商品，不需要重复填写品牌和规格。
+              </div>
+            ) : (
+              <>
+            <div className="mt-5 text-sm font-semibold text-slate-900">SKU 规格</div>
             <div className="mt-4 space-y-4">
               <label className={labelClass}>
                 商品名
@@ -310,34 +397,39 @@ function UrlAddProduct(): JSX.Element {
                 />
               </label>
             </div>
+              </>
+            )}
 
             {formError ? (
               <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
                 {formError}
               </div>
             ) : null}
-            {createMutation.isError ? (
+            {createMutation.isError || bindMutation.isError ? (
               <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
                 {createMutation.error instanceof Error
                   ? createMutation.error.message
-                  : '添加失败'}
+                  : bindMutation.error instanceof Error
+                    ? bindMutation.error.message
+                    : '添加失败'}
               </div>
             ) : null}
 
             <button
               type="submit"
-              disabled={!canCreate || createMutation.isPending}
+              disabled={!canCreate || createMutation.isPending || bindMutation.isPending}
               className="mt-5 inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-40"
             >
-              {createMutation.isPending ? (
+              {createMutation.isPending || bindMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <CheckCircle2 className="h-4 w-4" />
               )}
-              添加并开始监控
+              {targetProductId ? '绑定并开始监控' : '添加并开始监控'}
             </button>
             <p className="mt-2 text-xs text-slate-400">
-              添加后不会立即下单，只读取页面价格和可见券；首次抓取只建立史低基线。
+              添加后不会立即下单，只读取页面预估价和可见券；首次抓取只建立史低基线。
+              品牌、型号、版本和规格与已有商品一致时，会自动合并为同一个商品并跨平台比价。
             </p>
           </form>
         </div>
@@ -353,7 +445,7 @@ export default function AddProduct(): JSX.Element {
     <div>
       <PageHeader
         title="添加商品"
-        description="输入型号和规格自动匹配官方店；也可以粘贴商品链接。"
+        description="输入型号和规格自动匹配京东官方店；淘宝/天猫可粘贴商品链接。"
       />
 
       <div className="mb-5 inline-flex rounded-lg bg-slate-100 p-1">

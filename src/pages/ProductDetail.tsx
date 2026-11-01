@@ -5,6 +5,8 @@ import {
   ArrowLeft,
   ExternalLink,
   Loader2,
+  Pause,
+  Play,
   RefreshCw,
   ShieldAlert,
   Tag
@@ -14,12 +16,22 @@ import { Link, useParams } from 'react-router-dom'
 import { PageHeader } from '@/components/PageHeader'
 import { PlatformBadge } from '@/components/PlatformBadge'
 import { PriceChart } from '@/components/PriceChart'
-import { fetchPrices, fetchProduct, refreshProduct, verifyListing } from '@/lib/api'
+import {
+  calibrateListing,
+  fetchListingPrices,
+  fetchPrices,
+  fetchProduct,
+  fetchSettings,
+  refreshProduct,
+  updateListing,
+  verifyListing
+} from '@/lib/api'
 import {
   formatDateTime,
   formatPrice,
+  platformLabel,
+  priceSourceLabel,
   shopTypeLabel,
-  sourceLabel,
   statusLabel
 } from '@/lib/format'
 import type { PriceRange } from '@/lib/types'
@@ -56,6 +68,18 @@ export default function ProductDetail(): JSX.Element {
     enabled: validId,
     refetchInterval: 10000
   })
+  const listingPrices = useQuery({
+    queryKey: ['listing-prices', productId, range],
+    queryFn: () => fetchListingPrices(productId, range),
+    enabled: validId,
+    refetchInterval: 10000
+  })
+  const settings = useQuery({
+    queryKey: ['settings'],
+    queryFn: fetchSettings,
+    staleTime: 60000
+  })
+  const checkoutFreshHours = settings.data?.checkout_interval_hours ?? 6
   const refresh = useMutation({
     mutationFn: () => refreshProduct(productId),
     onSuccess: () => {
@@ -68,6 +92,23 @@ export default function ProductDetail(): JSX.Element {
     mutationFn: (listingId: number) => verifyListing(listingId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['product', productId] })
+      void queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    }
+  })
+  const calibrate = useMutation({
+    mutationFn: (listingId: number) => calibrateListing(listingId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['product', productId] })
+      void queryClient.invalidateQueries({ queryKey: ['prices', productId] })
+      void queryClient.invalidateQueries({ queryKey: ['jobs'] })
+    }
+  })
+  const toggle = useMutation({
+    mutationFn: (payload: { id: number; status: 'active' | 'paused' }) =>
+      updateListing(payload.id, payload.status),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['product', productId] })
+      void queryClient.invalidateQueries({ queryKey: ['products'] })
       void queryClient.invalidateQueries({ queryKey: ['jobs'] })
     }
   })
@@ -145,7 +186,7 @@ export default function ProductDetail(): JSX.Element {
         </div>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
           <div className="text-xs font-medium uppercase tracking-wider text-slate-400">
             当前最低价
@@ -157,19 +198,34 @@ export default function ProductDetail(): JSX.Element {
           </div>
           <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
             <PlatformBadge platform={data.current_platform} />
-            <span>{sourceLabel(data.current_source)}</span>
+            <span>{priceSourceLabel(data.current_source)}</span>
           </div>
         </section>
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
           <div className="text-xs font-medium uppercase tracking-wider text-slate-400">
-            历史最低
+            页面史低
           </div>
           <div className="mt-2 text-xl font-semibold text-emerald-600">
-            {data.history_low_cents !== null
-              ? formatPrice(data.history_low_cents)
+            {data.page_low_cents !== null
+              ? formatPrice(data.page_low_cents)
               : '—'}
           </div>
-          <div className="mt-2 text-xs text-slate-500">只认全平台最低价</div>
+          <div className="mt-2 text-xs text-slate-500">页面预估价，全平台最低</div>
+        </section>
+        <section className="rounded-2xl border border-slate-200 bg-white p-5">
+          <div className="text-xs font-medium uppercase tracking-wider text-slate-400">
+            实付史低
+          </div>
+          <div className="mt-2 text-xl font-semibold text-slate-700">
+            {data.checkout_low_cents !== null
+              ? formatPrice(data.checkout_low_cents)
+              : '未校准'}
+          </div>
+          <div className="mt-2 text-xs text-slate-500">
+            {data.checkout_last_at
+              ? `最近校准 ${formatDateTime(data.checkout_last_at)}`
+              : '手动校准后更新'}
+          </div>
         </section>
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
           <div className="text-xs font-medium uppercase tracking-wider text-slate-400">
@@ -179,7 +235,9 @@ export default function ProductDetail(): JSX.Element {
             {data.listing_count} 个链接
           </div>
           <div className="mt-2 text-xs text-slate-500">
-            {data.listings.map((item) => item.platform).join('、') || '—'}
+            {data.listings
+              .map((item) => `${platformLabel(item.platform)}/${item.shop_name}`)
+              .join('、') || '—'}
           </div>
         </section>
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
@@ -190,7 +248,7 @@ export default function ProductDetail(): JSX.Element {
             {formatDateTime(data.last_checked_at)}
           </div>
           <div className="mt-2 text-xs text-slate-500">
-            {data.current_source === 'checkout' ? '结算实付' : '页面预估'}
+            {priceSourceLabel(data.current_source)}
           </div>
         </section>
       </div>
@@ -199,7 +257,9 @@ export default function ProductDetail(): JSX.Element {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold text-slate-900">价格曲线</h2>
-            <p className="mt-1 text-xs text-slate-500">每次轮询记录一次全平台最低价。</p>
+            <p className="mt-1 text-xs text-slate-500">
+              每个平台一条价格线，粗线为全平台最低价；结算校准也会记录为平台价格点。
+            </p>
           </div>
           <div className="flex rounded-lg bg-slate-100 p-1">
             {RANGES.map((item) => (
@@ -225,7 +285,10 @@ export default function ProductDetail(): JSX.Element {
               加载曲线…
             </div>
           ) : (
-            <PriceChart points={prices.data ?? []} />
+            <PriceChart
+              points={prices.data ?? []}
+              series={listingPrices.data ?? []}
+            />
           )}
         </div>
       </section>
@@ -238,6 +301,18 @@ export default function ProductDetail(): JSX.Element {
         <div className="mt-4 space-y-4">
           {data.listings.map((item) => {
             const itemCoupons = (item.coupon_breakdown ?? []) as CouponItem[]
+            const checkoutAt = item.checkout_captured_at
+              ? new Date(item.checkout_captured_at).getTime()
+              : null
+            const pageAt = item.price_captured_at
+              ? new Date(item.price_captured_at).getTime()
+              : null
+            const checkoutStale =
+              checkoutAt === null ||
+              Date.now() - checkoutAt > checkoutFreshHours * 3600 * 1000
+            const pageChangedFirst =
+              checkoutAt !== null && pageAt !== null && pageAt > checkoutAt
+            const captchaPaused = item.last_attempt_status === 'captcha'
             return (
               <div
                 key={item.id}
@@ -258,41 +333,124 @@ export default function ProductDetail(): JSX.Element {
                       状态：{statusLabel(item.status)} · 上次抓取：{formatDateTime(item.last_checked_at)}
                     </div>
                   </div>
-                  <a
-                    href={item.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-slate-900"
-                  >
-                    打开商品
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </a>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        toggle.mutate({
+                          id: item.id,
+                          status: item.status === 'active' ? 'paused' : 'active'
+                        })
+                      }
+                      disabled={
+                        toggle.isPending ||
+                        item.status === 'verifying' ||
+                        item.status === 'needs_review' ||
+                        captchaPaused
+                      }
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {item.status === 'active' ? (
+                        <Pause className="h-3.5 w-3.5" />
+                      ) : (
+                        <Play className="h-3.5 w-3.5" />
+                      )}
+                      {item.status === 'active'
+                        ? '暂停监控'
+                        : captchaPaused
+                          ? '需先验证'
+                          : '恢复监控'}
+                    </button>
+                    <a
+                      href={item.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-slate-900"
+                    >
+                      打开商品
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                  </div>
                 </div>
 
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <div className="rounded-lg bg-white p-3">
-                    <div className="text-[11px] text-slate-400">页面价</div>
-                    <div className="mt-1 text-sm font-medium text-slate-800">
-                      {item.page_price_cents !== null
-                        ? formatPrice(item.page_price_cents)
-                        : '—'}
-                    </div>
-                  </div>
-                  <div className="rounded-lg bg-white p-3">
-                    <div className="text-[11px] text-slate-400">预估到手</div>
+                    <div className="text-[11px] text-slate-400">页面预估价</div>
                     <div className="mt-1 text-sm font-medium text-emerald-600">
                       {item.estimated_price_cents !== null
                         ? formatPrice(item.estimated_price_cents)
-                        : '—'}
+                        : '暂无页面预估价'}
                     </div>
                   </div>
                   <div className="rounded-lg bg-white p-3">
-                    <div className="text-[11px] text-slate-400">价格来源</div>
+                    <div className="text-[11px] text-slate-400">实付结算价</div>
                     <div className="mt-1 text-sm font-medium text-slate-800">
-                      {sourceLabel(item.price_source)}
+                      {item.checkout_price_cents !== null
+                        ? formatPrice(item.checkout_price_cents)
+                        : '未校准'}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-slate-400">
+                      {item.checkout_captured_at
+                        ? formatDateTime(item.checkout_captured_at)
+                        : '手动校准后更新'}
                     </div>
                   </div>
                 </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => calibrate.mutate(item.id)}
+                    disabled={
+                      calibrate.isPending ||
+                      item.status !== 'active' ||
+                      item.last_checkout_status === 'running'
+                    }
+                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    {calibrate.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Tag className="h-3.5 w-3.5" />
+                    )}
+                    手动校准实付
+                  </button>
+                  <span className="text-[11px] text-slate-400">
+                    会打开可见浏览器走到确认订单页读取实付款，不会提交订单；如未自动跳转，请手动点击“立即购买”。
+                  </span>
+                </div>
+                {checkoutStale || pageChangedFirst ? (
+                  <div className="mt-2 text-[11px] text-amber-700">
+                    {checkoutStale
+                      ? `实付结算价未校准或已超过 ${checkoutFreshHours} 小时（手动校准）；页面预估价正常抓取。`
+                      : '页面预估价在上次手动校准后发生变化，建议重新校准实付。'}
+                  </div>
+                ) : null}
+                {calibrate.isSuccess ? (
+                  <div className="mt-2 text-xs text-emerald-700">
+                    {calibrate.data?.message}
+                  </div>
+                ) : null}
+                {calibrate.isError ? (
+                  <div className="mt-2 text-xs text-rose-700">
+                    {calibrate.error instanceof Error
+                      ? calibrate.error.message
+                      : '校准失败'}
+                  </div>
+                ) : null}
+                {item.last_checkout_status === 'running' ? (
+                  <div className="mt-2 text-xs text-amber-700">
+                    结算校准进行中，请在弹出的浏览器窗口中操作；最多等待 3 分钟。
+                  </div>
+                ) : null}
+                {item.last_checkout_status === 'failed' ? (
+                  <div className="mt-2 text-xs text-rose-700">
+                    上次校准失败：{item.last_checkout_error ?? '未知错误'}
+                    {item.last_checkout_at
+                      ? `（${formatDateTime(item.last_checkout_at)}）`
+                      : ''}
+                  </div>
+                ) : null}
 
                 {item.last_attempt_status && item.last_attempt_status !== 'ok' ? (
                   <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs leading-5 text-rose-700">
@@ -302,11 +460,11 @@ export default function ProductDetail(): JSX.Element {
                   </div>
                 ) : null}
 
-                {item.status === 'verifying' ||
-                (item.status === 'paused' && item.last_attempt_status === 'captcha') ? (
+                {item.status === 'verifying' || captchaPaused ? (
                   <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
                     <div>
-                      京东要求人工验证。点击下方按钮，在弹出的 Edge 窗口完成滑块/验证，完成后会自动恢复监控。
+                      {platformLabel(item.platform)}要求人工验证。点击下方按钮，在弹出的 Edge
+                      窗口完成滑块/验证，完成后会自动恢复监控。
                     </div>
                     <button
                       type="button"
@@ -319,7 +477,9 @@ export default function ProductDetail(): JSX.Element {
                       ) : (
                         <ShieldAlert className="h-3.5 w-3.5" />
                       )}
-                      {item.status === 'verifying' ? '验证中…' : '打开京东验证页'}
+                      {item.status === 'verifying'
+                        ? '验证中…'
+                        : `打开${platformLabel(item.platform)}验证页`}
                     </button>
                     {verify.isSuccess ? (
                       <div className="mt-2 text-emerald-700">
@@ -354,6 +514,9 @@ export default function ProductDetail(): JSX.Element {
                 ) : (
                   <div className="mt-3 text-xs text-slate-400">未识别到可见优惠券</div>
                 )}
+                <div className="mt-2 text-[10px] text-slate-400">
+                  券明细仅供参考，最终以页面预估价为准。
+                </div>
               </div>
             )
           })}

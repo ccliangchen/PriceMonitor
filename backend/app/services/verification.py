@@ -4,11 +4,11 @@ import asyncio
 from contextlib import suppress
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.adapters.registry import get_adapter
 from app.core.db import session_scope
-from app.core.models import Account, Listing
+from app.core.models import Account, Listing, PriceSnapshot
 from app.services.browser import BrowserService
 
 _verify_tasks: dict[int, asyncio.Task[None]] = {}
@@ -57,6 +57,16 @@ async def _run_verification(listing_id: int, browser: BrowserService) -> None:
             raise RuntimeError(f"No adapter for {platform}")
         await adapter.open_verification(listing, account)
         status = "active"
+        with session_scope() as db:
+            # Verification is resolved; clear the captcha failure marker so the
+            # UI hides the verification prompt until the next real failure.
+            db.execute(
+                delete(PriceSnapshot).where(
+                    PriceSnapshot.listing_id == listing_id,
+                    PriceSnapshot.status == "captcha",
+                )
+            )
+            db.commit()
     except asyncio.CancelledError:
         status = "paused"
         raise

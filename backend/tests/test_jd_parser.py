@@ -1,9 +1,45 @@
+from pathlib import Path
+
+from bs4 import BeautifulSoup
+
 from app.adapters.jd.parser import (
     extract_embedded_price_cents,
+    extract_embedded_promotion_price_cents,
     extract_sku,
+    parse_checkout_payable_cents,
     parse_product_page,
     parse_sku_variants,
 )
+
+
+def test_real_item_page_fixture():
+    fixture = Path(__file__).parent / "fixtures" / "jd" / "item_page.html"
+    html = fixture.read_text(encoding="utf-8")
+    soup = BeautifulSoup(html, "lxml")
+
+    parsed = parse_product_page(
+        url="https://item.jd.com/100396381212.html",
+        title=soup.title.get_text(strip=True) if soup.title else "",
+        body_text=soup.body.get_text("\n", strip=True) if soup.body else "",
+        price_texts=[
+            element.get_text(" ", strip=True)
+            for element in soup.select(".p-price .price")
+        ],
+        shop_texts=[
+            element.get_text(" ", strip=True)
+            for element in soup.select(".shopName")
+        ],
+        embedded_price_cents=extract_embedded_price_cents(html),
+    )
+
+    assert parsed.shop_type == "jd_official_self"
+    assert parsed.page_price_cents == 369900
+    assert parsed.estimated_price_cents == 349900
+    assert parsed.confidence == "high"
+    assert extract_embedded_promotion_price_cents(html) == 349900
+    raw_coupons = " ".join(item["raw"] for item in parsed.coupon_breakdown)
+    assert "立减200元" in raw_coupons
+    assert "满3000减100" in raw_coupons
 
 
 def test_self_operated_with_threshold_coupon():
@@ -20,6 +56,7 @@ def test_self_operated_with_threshold_coupon():
     assert parsed.page_price_cents == 749900
     assert parsed.coupon_discount_cents == 30000
     assert parsed.estimated_price_cents == 719900
+    assert parsed.confidence == "low"
     assert parsed.status == "ok"
 
 
@@ -156,7 +193,17 @@ def test_mobile_page_body_is_parsed():
     assert parsed.shop_name == "iQOO官方旗舰店"
     assert parsed.page_price_cents == 489900
     assert parsed.estimated_price_cents == 489900
+    assert parsed.confidence == "high"
     assert parsed.status == "ok"
+
+
+def test_embedded_promotion_and_seckill_price():
+    html = (
+        '"promov2":[{"pis":[{"customtag":"{\\"p\\":\\"3498.00\\"}"}]}],'
+        '"seckill":{"jdPrice":"3699.0","miaoShaPrice":"3498.0"}'
+    )
+
+    assert extract_embedded_promotion_price_cents(html) == 349800
 
 
 def test_embedded_json_price_is_extracted():
@@ -214,6 +261,12 @@ def test_login_and_captcha_are_detected():
 
     assert login.status == "login_required"
     assert captcha.status == "captcha"
+
+
+def test_parse_checkout_payable():
+    assert parse_checkout_payable_cents("应付总额 ￥3,698.00") == 369800
+    assert parse_checkout_payable_cents("需付款：2699.00元") == 269900
+    assert parse_checkout_payable_cents("没有金额") is None
 
 
 def test_extract_sku():

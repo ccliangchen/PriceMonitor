@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.base import PriceQuote
 from app.core.models import Listing, Notification, Product, ProductPriceSnapshot, utcnow
+from app.core.platforms import platform_label
 from app.notifiers.base import NotificationMessage
 from app.notifiers.serverchan import ServerChanNotifier
 
@@ -51,11 +52,23 @@ def build_new_low_message(
 ) -> NotificationMessage:
     current = snapshot.lowest_price_cents
     previous = snapshot.previous_low_cents
-    source_label = "结算实付价" if quote.source == "checkout" else "预估到手价"
+    label = platform_label(listing.platform)
+    if quote.source == "checkout":
+        source_label = "实付结算价"
+        title_prefix = "实付新低"
+        title_suffix = "（实付结算价）"
+    elif quote.confidence == "high":
+        source_label = "页面预估价"
+        title_prefix = "页面新低"
+        title_suffix = "（页面预估价）"
+    else:
+        source_label = "低置信度页面价"
+        title_prefix = "预估新低"
+        title_suffix = ""
     lines = [
         f"**商品**：{product.name}",
         f"**规格**：{product.ram_gb}GB+{product.storage_gb}GB",
-        f"**平台**：京东 · {listing.shop_name}",
+        f"**平台**：{label} · {listing.shop_name}",
         f"**到手价**：{format_cents(current)}（{source_label}）",
     ]
     if previous is not None:
@@ -73,11 +86,14 @@ def build_new_low_message(
             f"**链接**：[打开商品]({listing.url})",
             f"**时间**：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
             "",
-            "价格来自京东页面展示与可见券估算，实际以下单结算为准。",
+            "价格来自平台页面展示与可见券估算，实际以下单结算为准。",
         ]
     )
     return NotificationMessage(
-        title=f"京东新低 {format_cents(current)} · {product.name}",
+        title=(
+            f"{label}{title_prefix} {format_cents(current)}"
+            f"{title_suffix} · {product.name}"
+        ),
         body="\n\n".join(lines),
         url=listing.url,
     )
@@ -89,7 +105,13 @@ async def send_new_low_notification(
     listing: Listing,
     quote: PriceQuote,
     snapshot: ProductPriceSnapshot,
-) -> Notification:
+) -> Notification | None:
+    if quote.source == "page" and quote.confidence != "high":
+        logger.warning(
+            "Skip low-confidence page new low for listing {}",
+            listing.id,
+        )
+        return None
     message = build_new_low_message(product, listing, quote, snapshot)
     notification = Notification(
         product_id=product.id,
@@ -117,6 +139,110 @@ async def send_new_low_notification(
         notification.error_message = str(exc)
         db.commit()
         logger.exception("Failed to send ServerChan notification")
+        return notification
+
+    notification.status = "sent"
+    notification.sent_at = utcnow()
+    db.commit()
+    return notification
+
+
+async def send_listing_paused_alert(
+    db: Session,
+    listing: Listing,
+    reason: str,
+    detail: str,
+) -> Notification:
+    product = db.get(Product, listing.product_id)
+    label = platform_label(listing.platform)
+    name = product.name if product is not None else listing.title
+    title = f"监控已暂停 · {name}"
+    lines = [
+        f"**商品**：{name}",
+        f"**平台**：{label} · {listing.shop_name}",
+        f"**原因**：{reason}",
+        f"**详情**：{detail}",
+        f"**链接**：[打开商品]({listing.url})",
+        "",
+        "处理完成后可在商品详情页重新打开验证或恢复监控。",
+    ]
+    notification = Notification(
+        product_id=listing.product_id,
+        channel="serverchan",
+        status="pending",
+        payload={"title": title, "body": "\n\n".join(lines), "url": listing.url},
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+
+    sendkey = get_serverchan_key()
+    if not sendkey:
+        notification.status = "failed"
+        notification.error_message = "ServerChan SendKey 未配置"
+        db.commit()
+        logger.warning("ServerChan key is not configured; pause alert skipped")
+        return notification
+
+    try:
+        await ServerChanNotifier(sendkey).send(
+            NotificationMessage(title=title, body="\n\n".join(lines), url=listing.url)
+        )
+    except Exception as exc:
+        notification.status = "failed"
+        notification.error_message = str(exc)
+        db.commit()
+        logger.exception("Failed to send pause alert")
+        return notification
+
+    notification.status = "sent"
+    notification.sent_at = utcnow()
+    db.commit()
+    return notification
+
+
+async def send_login_required_alert(
+    db: Session,
+    listing: Listing,
+    platform: str,
+) -> Notification:
+    label = platform_label(platform)
+    product = db.get(Product, listing.product_id)
+    name = product.name if product is not None else listing.title
+    title = f"{label}登录已失效 · {name}"
+    lines = [
+        f"**平台**：{label}",
+        f"**商品**：{name}",
+        "**操作**：请到 PriceMonitor 的“账号管理”重新扫码登录",
+        "",
+        "登录恢复后，监控会在下一轮轮询自动继续。",
+    ]
+    notification = Notification(
+        product_id=listing.product_id,
+        channel="serverchan",
+        status="pending",
+        payload={"title": title, "body": "\n\n".join(lines), "url": listing.url},
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+
+    sendkey = get_serverchan_key()
+    if not sendkey:
+        notification.status = "failed"
+        notification.error_message = "ServerChan SendKey 未配置"
+        db.commit()
+        return notification
+
+    try:
+        await ServerChanNotifier(sendkey).send(
+            NotificationMessage(title=title, body="\n\n".join(lines), url=listing.url)
+        )
+    except Exception as exc:
+        notification.status = "failed"
+        notification.error_message = str(exc)
+        db.commit()
+        logger.exception("Failed to send login-required alert")
         return notification
 
     notification.status = "sent"

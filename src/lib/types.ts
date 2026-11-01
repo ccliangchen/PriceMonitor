@@ -41,7 +41,7 @@ export interface ListingResolve {
 }
 
 export interface ListingPayload {
-  platform: 'jd'
+  platform: 'jd' | 'taobao'
   url: string
   title: string
   shop_name: string
@@ -76,7 +76,11 @@ export interface ProductSummary {
   current_price_cents: number | null
   current_platform: string | null
   current_source: string | null
+  current_confidence: string | null
   history_low_cents: number | null
+  page_low_cents: number | null
+  checkout_low_cents: number | null
+  checkout_last_at: string | null
   last_checked_at: string | null
   listing_count: number
   status: string
@@ -95,19 +99,38 @@ export interface ListingDetail {
   last_checked_at: string | null
   page_price_cents: number | null
   estimated_price_cents: number | null
+  checkout_price_cents: number | null
   effective_price_cents: number | null
   price_source: string | null
+  price_confidence: string | null
   coupon_breakdown: Array<Record<string, unknown>>
   price_captured_at: string | null
+  checkout_captured_at: string | null
   last_attempt_status: string | null
   last_attempt_error: string | null
   last_attempt_at: string | null
+  last_checkout_status: string | null
+  last_checkout_error: string | null
+  last_checkout_at: string | null
 }
 
 export interface PricePoint {
   captured_at: string
   lowest_price_cents: number
   lowest_platform: string
+}
+
+export interface ListingPricePoint {
+  captured_at: string
+  effective_price_cents: number
+  source: string
+}
+
+export interface ListingPriceSeries {
+  listing_id: number
+  platform: string
+  shop_name: string
+  points: ListingPricePoint[]
 }
 
 export interface ProductDetail extends ProductSummary {

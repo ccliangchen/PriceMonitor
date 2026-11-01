@@ -107,7 +107,7 @@ export default function App(): JSX.Element {
         </nav>
 
         <div className="border-t border-slate-100 px-5 py-4 text-[11px] text-slate-400">
-          <div>v{appInfo.data?.version ?? '0.1.0'} · M1 开发中</div>
+          <div>v{appInfo.data?.version ?? '0.1.0'} · M2 开发中</div>
           <div className="mt-1 truncate" title={appInfo.data?.dataDir}>
             {appInfo.data?.dataDir ?? '本地数据目录'}
           </div>

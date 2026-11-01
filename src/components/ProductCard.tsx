@@ -2,15 +2,21 @@ import type { JSX } from 'react'
 import { ArrowUpRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
-import { formatDateTime, formatPrice, statusLabel } from '@/lib/format'
+import {
+  formatDateTime,
+  formatPrice,
+  priceSourceLabel,
+  statusLabel
+} from '@/lib/format'
 import type { ProductSummary } from '@/lib/types'
 import { PlatformBadge } from './PlatformBadge'
 
 export function ProductCard({ product }: { product: ProductSummary }): JSX.Element {
+  const pageLow = product.page_low_cents
   const isAtLow =
     product.current_price_cents !== null &&
-    product.history_low_cents !== null &&
-    product.current_price_cents <= product.history_low_cents
+    pageLow !== null &&
+    product.current_price_cents <= pageLow
 
   return (
     <Link
@@ -38,20 +44,20 @@ export function ProductCard({ product }: { product: ProductSummary }): JSX.Eleme
           <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
             <PlatformBadge platform={product.current_platform} />
             <span>
-              {product.current_source === 'checkout'
-                ? '实付'
-                : product.current_source === 'page'
-                  ? '预估'
-                  : ''}
+              {priceSourceLabel(product.current_source)}
             </span>
           </div>
         </div>
         <div className="text-right">
-          <div className="text-[11px] text-slate-400">史低</div>
+          <div className="text-[11px] text-slate-400">页面史低</div>
           <div className="text-sm font-medium text-emerald-600">
-            {product.history_low_cents !== null
-              ? formatPrice(product.history_low_cents)
-              : '—'}
+            {pageLow !== null ? formatPrice(pageLow) : '—'}
+          </div>
+          <div className="mt-1 text-[11px] text-slate-400">实付史低</div>
+          <div className="text-xs text-slate-600">
+            {product.checkout_low_cents !== null
+              ? formatPrice(product.checkout_low_cents)
+              : '未校准'}
           </div>
         </div>
       </div>
@@ -65,7 +71,9 @@ export function ProductCard({ product }: { product: ProductSummary }): JSX.Eleme
         </span>
       </div>
       {isAtLow ? (
-        <div className="mt-2 text-[11px] font-medium text-emerald-600">当前就是史低</div>
+        <div className="mt-2 text-[11px] font-medium text-emerald-600">
+          当前就是页面史低
+        </div>
       ) : null}
     </Link>
   )

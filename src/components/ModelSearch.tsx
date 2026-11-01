@@ -292,7 +292,8 @@ export default function ModelSearch(): JSX.Element {
           </button>
         </div>
         <p className="mt-2 text-xs leading-5 text-slate-500">
-          只匹配 iQOO 官方旗舰店和京东自营旗舰店；规格不存在时会展示可用规格。首次搜索需要打开官方店商品页，可能触发一次京东验证。
+          按型号搜索目前只覆盖京东官方店（iQOO 官方旗舰店和京东自营旗舰店）；淘宝/天猫请切换到“粘贴链接”。
+          规格不存在时会展示可用规格。首次搜索需要打开官方店商品页，可能触发一次京东验证。
         </p>
         {searchMutation.isError ? (
           <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">

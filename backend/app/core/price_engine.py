@@ -12,6 +12,7 @@ def save_price_snapshot(db: Session, listing: Listing, quote: PriceQuote) -> Pri
         listing_id=listing.id,
         captured_at=quote.captured_at,
         source=quote.source,
+        confidence=quote.confidence,
         page_price_cents=quote.page_price_cents,
         coupon_discount_cents=quote.coupon_discount_cents,
         estimated_price_cents=quote.estimated_price_cents,

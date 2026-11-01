@@ -57,12 +57,12 @@ export function shopTypeLabel(shopType: string): string {
   return '店铺待确认'
 }
 
-export function sourceLabel(source: string | null | undefined): string {
+export function priceSourceLabel(source: string | null | undefined): string {
   if (source === 'checkout') {
-    return '结算实付'
+    return '实付结算价'
   }
   if (source === 'page') {
-    return '页面预估'
+    return '页面预估价'
   }
   return '—'
 }
@@ -75,6 +75,7 @@ export function statusLabel(status: string): string {
     error: '异常',
     ok: '正常',
     failed: '失败',
+    skipped: '已跳过',
     running: '进行中',
     verifying: '验证中',
     logged_in: '已登录',

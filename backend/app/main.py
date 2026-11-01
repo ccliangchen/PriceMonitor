@@ -15,6 +15,7 @@ from sqlalchemy import update
 from app import __version__
 from app.adapters.jd.adapter import JdAdapter
 from app.adapters.registry import register
+from app.adapters.taobao.adapter import TaobaoAdapter
 from app.api.router import api_router
 from app.config import Settings
 from app.core.db import init_db, session_scope
@@ -78,6 +79,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     browser = BrowserService()
     register(JdAdapter(browser))
+    register(TaobaoAdapter(browser))
 
     app = FastAPI(
         title="PriceMonitor Backend",

@@ -2,25 +2,31 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.exceptions import ShopNotAllowed
 from app.core.models import Product
 from app.core.schemas import (
+    ListingCreate,
+    ListingPriceSeries,
     PricePoint,
     ProductCreateRequest,
     ProductDetail,
     ProductSummary,
 )
+from app.services.accounts import ensure_platform_account
 from app.services.catalog import (
+    add_listing_to_product,
     create_product_with_listing,
     list_products,
+    listing_price_series,
     price_points,
     product_detail,
     product_summary,
 )
+from app.services.checkout import start_checkout_calibration
 from app.services.monitor import poll_product
 
 router = APIRouter()
@@ -46,12 +52,36 @@ def create_product(payload: ProductCreateRequest, db: DbSession) -> ProductSumma
     return product_summary(db, product)
 
 
+@router.post("/products/{product_id}/listings", response_model=ProductDetail)
+def bind_listing(product_id: int, payload: ListingCreate, db: DbSession) -> ProductDetail:
+    product = db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    try:
+        add_listing_to_product(db, product, payload)
+    except ShopNotAllowed as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.refresh(product)
+    return product_detail(db, product)
+
+
 @router.get("/products/{product_id}", response_model=ProductDetail)
 def get_product(product_id: int, db: DbSession) -> ProductDetail:
     product = db.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="商品不存在")
     return product_detail(db, product)
+
+
+def _range_since(range_: str) -> datetime | None:
+    days = {"7d": 7, "30d": 30, "90d": 90}
+    if range_ == "all":
+        return None
+    if range_ in days:
+        return datetime.now(UTC) - timedelta(days=days[range_])
+    raise HTTPException(status_code=422, detail="range 只支持 7d/30d/90d/all")
 
 
 @router.get("/products/{product_id}/prices", response_model=list[PricePoint])
@@ -63,16 +93,22 @@ def get_prices(
     product = db.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="商品不存在")
+    return price_points(db, product_id, _range_since(range_))
 
-    days = {"7d": 7, "30d": 30, "90d": 90}
-    if range_ == "all":
-        since = None
-    elif range_ in days:
-        since = datetime.now(UTC) - timedelta(days=days[range_])
-    else:
-        raise HTTPException(status_code=422, detail="range 只支持 7d/30d/90d/all")
 
-    return price_points(db, product_id, since)
+@router.get(
+    "/products/{product_id}/listing-prices",
+    response_model=list[ListingPriceSeries],
+)
+def get_listing_prices(
+    product_id: int,
+    db: DbSession,
+    range_: str = Query("30d", alias="range"),
+) -> list[ListingPriceSeries]:
+    product = db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    return listing_price_series(db, product_id, _range_since(range_))
 
 
 @router.post("/products/{product_id}/refresh")
@@ -96,6 +132,38 @@ def refresh_product(
 
     background_tasks.add_task(poll_product, product_id)
     return {"queued": True}
+
+
+@router.post("/products/{product_id}/checkout-calibrate")
+def calibrate_product(
+    product_id: int,
+    request: Request,
+    db: DbSession,
+) -> dict[str, object]:
+    product = db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="商品不存在")
+
+    started = []
+    for listing in product.listings:
+        if listing.status != "active":
+            continue
+        account = ensure_platform_account(
+            db, request.app.state.settings, listing.platform
+        )
+        if account.status != "logged_in":
+            continue
+        if start_checkout_calibration(listing.id):
+            started.append(listing.id)
+    return {
+        "started": len(started),
+        "listing_ids": started,
+        "message": (
+            "已打开结算预览窗口；如未自动进入确认页，请手动点击“立即购买”。不会提交订单。"
+            if started
+            else "没有可校准的链接，或校准正在进行/冷却中"
+        ),
+    }
 
 
 @router.delete("/products/{product_id}", status_code=204)

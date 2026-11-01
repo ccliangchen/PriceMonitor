@@ -7,6 +7,7 @@ from app.core.models import Account, Listing
 ShopType = Literal["official_flagship", "jd_official_self", "other", "unknown"]
 QuoteStatus = Literal["ok", "captcha", "login_required", "parse_error", "outlier"]
 PriceSource = Literal["page", "checkout"]
+PriceConfidence = Literal["high", "low"]
 
 
 @dataclass
@@ -28,6 +29,7 @@ class PriceQuote:
     listing_id: int
     source: PriceSource
     effective_price_cents: int
+    confidence: PriceConfidence | None = None
     captured_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     page_price_cents: int | None = None
     coupon_discount_cents: int | None = None
@@ -43,6 +45,7 @@ class PriceQuote:
 class LoginStatus:
     logged_in: bool
     message: str = ""
+    display_name: str | None = None
 
 
 class PlatformAdapter(Protocol):
@@ -56,6 +59,11 @@ class PlatformAdapter(Protocol):
 
     async def fetch_page_price(self, listing: Listing, account: Account) -> PriceQuote: ...
 
-    async def fetch_checkout_price(self, listing: Listing, account: Account) -> PriceQuote: ...
+    async def fetch_checkout_price(
+        self,
+        listing: Listing,
+        account: Account,
+        headless: bool = False,
+    ) -> PriceQuote: ...
 
     async def check_login(self, account: Account) -> LoginStatus: ...

@@ -129,6 +129,7 @@ class PriceSnapshot(Base):
         UTCDateTime(), default=utcnow, nullable=False, index=True
     )
     source: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
     page_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     coupon_discount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     estimated_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)

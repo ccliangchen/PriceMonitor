@@ -140,7 +140,7 @@ export default function SettingsPage(): JSX.Element {
         >
           <h2 className="text-sm font-semibold text-slate-900">监测</h2>
           <p className="mt-1 text-xs leading-5 text-slate-500">
-            轮询间隔默认 30 分钟；结算校准在 M2 接入。修改后保存即重新排程。
+            轮询间隔默认 30 分钟，修改后保存即重新排程。价格以页面预估价为主，自动结算已停用；如需核对实付，可在商品详情页手动校准。
           </p>
 
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -158,7 +158,7 @@ export default function SettingsPage(): JSX.Element {
             </label>
 
             <label className={labelClass}>
-              结算校准间隔（小时）
+              实付参考有效期（小时）
               <input
                 type="number"
                 min={4}
@@ -168,7 +168,7 @@ export default function SettingsPage(): JSX.Element {
                 className={inputClass}
               />
               <span className="mt-1 block text-xs font-normal text-slate-400">
-                M2 接入结算预览
+                超过该时长会提示手动校准实付；不影响页面预估价
               </span>
             </label>
           </div>
@@ -311,7 +311,7 @@ export default function SettingsPage(): JSX.Element {
             ) : null}
 
             <p className="mt-3 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-500">
-              M1 仅 ServerChan 生效。密钥不会写入 SQLite，也不会显示在界面上。
+              目前 ServerChan 生效。密钥不会写入 SQLite，也不会显示在界面上。
             </p>
           </section>
 

@@ -12,7 +12,10 @@ def test_settings_defaults(client):
 def test_settings_patch_persists(client):
     response = client.patch(
         "/api/v1/settings",
-        json={"poll_interval_minutes": 45, "notification_channel": "pushplus"},
+        json={
+            "poll_interval_minutes": 45,
+            "notification_channel": "pushplus",
+        },
     )
 
     assert response.status_code == 200

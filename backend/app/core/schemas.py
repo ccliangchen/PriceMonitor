@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 NotificationChannel = Literal["serverchan", "pushplus"]
-Platform = Literal["jd"]
+Platform = Literal["jd", "taobao"]
 ShopTypeName = Literal["official_flagship", "jd_official_self", "other", "unknown"]
 
 
@@ -82,6 +82,12 @@ class ListingCreate(BaseModel):
     detected_specs: dict[str, str] = Field(default_factory=dict)
 
 
+class ListingPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["active", "paused"] | None = None
+
+
 class ProductCreateRequest(BaseModel):
     name: str = Field(min_length=1)
     brand: str = Field(min_length=1)
@@ -106,8 +112,12 @@ class ProductSummary(BaseModel):
     current_price_cents: int | None
     current_platform: str | None
     current_source: str | None
+    current_confidence: str | None = None
     history_low_cents: int | None
     last_checked_at: datetime | None
+    page_low_cents: int | None = None
+    checkout_low_cents: int | None = None
+    checkout_last_at: datetime | None = None
     listing_count: int
     status: str
     created_at: datetime
@@ -125,19 +135,38 @@ class ListingDetail(BaseModel):
     last_checked_at: datetime | None
     page_price_cents: int | None = None
     estimated_price_cents: int | None = None
+    checkout_price_cents: int | None = None
     effective_price_cents: int | None = None
     price_source: str | None = None
+    price_confidence: str | None = None
     coupon_breakdown: list[dict] = Field(default_factory=list)
     price_captured_at: datetime | None = None
+    checkout_captured_at: datetime | None = None
     last_attempt_status: str | None = None
     last_attempt_error: str | None = None
     last_attempt_at: datetime | None = None
+    last_checkout_status: str | None = None
+    last_checkout_error: str | None = None
+    last_checkout_at: datetime | None = None
 
 
 class PricePoint(BaseModel):
     captured_at: datetime
     lowest_price_cents: int
     lowest_platform: str
+
+
+class ListingPricePoint(BaseModel):
+    captured_at: datetime
+    effective_price_cents: int
+    source: str
+
+
+class ListingPriceSeries(BaseModel):
+    listing_id: int
+    platform: str
+    shop_name: str
+    points: list[ListingPricePoint] = Field(default_factory=list)
 
 
 class ProductDetail(ProductSummary):

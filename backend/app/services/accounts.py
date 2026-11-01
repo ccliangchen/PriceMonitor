@@ -17,23 +17,40 @@ from app.services.browser import BrowserService
 _login_tasks: dict[int, asyncio.Task[None]] = {}
 
 
-def ensure_jd_account(db: Session, settings: Settings) -> Account:
+PLATFORM_DISPLAY_NAMES = {
+    "jd": "京东账号",
+    "taobao": "淘宝账号",
+}
+
+
+def ensure_platform_account(db: Session, settings: Settings, platform: str) -> Account:
     account = db.scalar(
-        select(Account).where(Account.platform == "jd").order_by(Account.id)
+        select(Account).where(Account.platform == platform).order_by(Account.id)
     )
     if account is not None:
         return account
 
+    if platform not in PLATFORM_DISPLAY_NAMES:
+        raise ValueError(f"不支持的平台：{platform}")
+
     account = Account(
-        platform="jd",
-        display_name="京东账号",
-        profile_dir=str(settings.browser_profiles_dir / "jd_default"),
+        platform=platform,
+        display_name=PLATFORM_DISPLAY_NAMES[platform],
+        profile_dir=str(settings.browser_profiles_dir / f"{platform}_default"),
         status="needs_login",
     )
     db.add(account)
     db.commit()
     db.refresh(account)
     return account
+
+
+def ensure_jd_account(db: Session, settings: Settings) -> Account:
+    return ensure_platform_account(db, settings, "jd")
+
+
+def ensure_taobao_account(db: Session, settings: Settings) -> Account:
+    return ensure_platform_account(db, settings, "taobao")
 
 
 def start_login(account_id: int) -> bool:
@@ -76,7 +93,7 @@ async def _run_login(account_id: int) -> None:
         _update_status(account_id, "needs_login")
         raise
     except Exception:
-        logger.exception("JD login failed")
+        logger.exception("{} login failed", platform)
         _update_status(account_id, "needs_login")
         return
     finally:
@@ -88,10 +105,16 @@ async def _run_login(account_id: int) -> None:
         account_id,
         "logged_in" if result.logged_in else "needs_login",
         last_login=result.logged_in,
+        display_name=result.display_name,
     )
 
 
-def _update_status(account_id: int, status: str, last_login: bool = False) -> None:
+def _update_status(
+    account_id: int,
+    status: str,
+    last_login: bool = False,
+    display_name: str | None = None,
+) -> None:
     with session_scope() as db:
         account = db.get(Account, account_id)
         if account is None:
@@ -99,6 +122,8 @@ def _update_status(account_id: int, status: str, last_login: bool = False) -> No
         account.status = status
         if last_login:
             account.last_login_at = utcnow()
+        if display_name:
+            account.display_name = display_name[:100]
         db.commit()
 
 
@@ -147,7 +172,7 @@ async def logout_account(account_id: int, browser: BrowserService) -> None:
         account.status = "needs_login"
         account.last_login_at = None
         db.commit()
-    logger.info("JD account {} logged out", account_id)
+    logger.info("Account {} logged out", account_id)
 
 
 async def check_account(account_id: int, browser: BrowserService) -> str:
@@ -163,5 +188,10 @@ async def check_account(account_id: int, browser: BrowserService) -> str:
 
     result = await adapter.check_login(account)
     status = "logged_in" if result.logged_in else "needs_login"
-    _update_status(account_id, status, last_login=result.logged_in)
+    _update_status(
+        account_id,
+        status,
+        last_login=result.logged_in,
+        display_name=result.display_name,
+    )
     return status

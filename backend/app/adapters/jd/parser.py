@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
-from app.adapters.base import QuoteStatus, ShopType
+from app.adapters.base import PriceConfidence, QuoteStatus, ShopType
 
 PRICE_NUMBER = r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)"
 TO_PRICE_RE = re.compile(rf"到手价[^\d]{{0,12}}{PRICE_NUMBER}")
@@ -14,6 +14,9 @@ JD_PRICE_RE = re.compile(rf"京东价[^\d]{{0,12}}{PRICE_NUMBER}")
 ANY_PRICE_RE = re.compile(rf"(?:¥|￥)\s*{PRICE_NUMBER}")
 COUPON_THRESHOLD_RE = re.compile(r"满\s*([0-9][0-9,]*)\s*减\s*([0-9][0-9,]*)")
 COUPON_AMOUNT_RE = re.compile(r"([0-9][0-9,]*)\s*元(?:优惠券|券)")
+PROMOTION_AMOUNT_RE = re.compile(
+    r"(?:立减|直降|补贴|返现)[^\d]{0,6}([0-9][0-9,]*)\s*元"
+)
 NOISE_PRICE_WORDS = ("月", "白条", "定金", "首付", "每期", "分期")
 NOISE_PRICE_RE = re.compile(r"\d+\s*期")
 EMBEDDED_PRICE_RE = re.compile(
@@ -21,6 +24,9 @@ EMBEDDED_PRICE_RE = re.compile(
     re.DOTALL,
 )
 EMBEDDED_JD_PRICE_RE = re.compile(r'"jdPrice"\s*:\s*"([0-9]+(?:\.[0-9]{1,2})?)"')
+PAYABLE_RE = re.compile(
+    rf"(?:应付总额|应付金额|需付款|实付款|应付)[^\d]{{0,12}}{PRICE_NUMBER}"
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,7 @@ class ParsedProduct:
     coupon_discount_cents: int | None = None
     coupon_breakdown: list[dict] = field(default_factory=list)
     shipping_cents: int = 0
+    confidence: PriceConfidence | None = None
     status: QuoteStatus = "ok"
     error: str | None = None
 
@@ -117,6 +124,27 @@ def _parse_coupons(text: str, page_price_cents: int | None) -> tuple[int, list[d
         breakdown.append(
             {
                 "type": "优惠券",
+                "raw": raw,
+                "threshold_cents": None,
+                "amount_cents": amount,
+                "applied": applicable,
+            }
+        )
+        if applicable:
+            total += amount
+
+    for match in PROMOTION_AMOUNT_RE.finditer(text):
+        raw = match.group(0)
+        if raw in seen:
+            continue
+        seen.add(raw)
+        amount = parse_price_cents(match.group(1))
+        if amount is None:
+            continue
+        applicable = page_price_cents is not None and page_price_cents > amount
+        breakdown.append(
+            {
+                "type": "立减/补贴",
                 "raw": raw,
                 "threshold_cents": None,
                 "amount_cents": amount,
@@ -207,6 +235,63 @@ def parse_sku_variants(html: str) -> list[SkuVariant]:
     return variants
 
 
+def parse_checkout_payable_cents(text: str) -> int | None:
+    match = PAYABLE_RE.search(text or "")
+    if match:
+        return parse_price_cents(match.group(1))
+    return None
+
+
+def extract_embedded_promotion_price_cents(html: str) -> int | None:
+    """Read JD's promo/seckill JSON when the page has no "到手价" label."""
+    decoder = json.JSONDecoder()
+    prices: list[int] = []
+
+    index = html.find('"promov2"')
+    if index >= 0:
+        start = html.find("[", index)
+        if start >= 0:
+            try:
+                data, _end = decoder.raw_decode(html[start:])
+            except (ValueError, TypeError):
+                data = None
+            if isinstance(data, list):
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    for pi in item.get("pis") or []:
+                        if not isinstance(pi, dict):
+                            continue
+                        custom = pi.get("customtag")
+                        if isinstance(custom, str):
+                            try:
+                                custom = json.loads(custom)
+                            except (ValueError, TypeError):
+                                custom = {}
+                        if isinstance(custom, dict):
+                            cents = parse_price_cents(str(custom.get("p") or ""))
+                            if cents is not None:
+                                prices.append(cents)
+
+    index = html.find('"seckill"')
+    if index >= 0:
+        start = html.find("{", index)
+        if start >= 0:
+            try:
+                data, _end = decoder.raw_decode(html[start:])
+            except (ValueError, TypeError):
+                data = None
+            if isinstance(data, dict) and str(
+                data.get("promotionStatus") or "true"
+            ).lower() in ("true", "1"):
+                for key in ("miaoShaPrice", "jdPrice"):
+                    cents = parse_price_cents(str(data.get(key) or ""))
+                    if cents is not None:
+                        prices.append(cents)
+
+    return min(prices) if prices else None
+
+
 def extract_embedded_price_cents(html: str) -> int | None:
     match = EMBEDDED_PRICE_RE.search(html)
     if match:
@@ -277,6 +362,7 @@ def parse_product_page(
             estimated_price_cents=estimated_from_label,
             coupon_discount_cents=coupon_total,
             coupon_breakdown=breakdown,
+            confidence="high",
             status="ok",
         )
 
@@ -301,6 +387,9 @@ def parse_product_page(
         estimated_price_cents=estimated,
         coupon_discount_cents=coupon_total,
         coupon_breakdown=breakdown,
+        # Without an explicit "到手价", only a page price with no applicable
+        # coupon is treated as final. Coupon arithmetic is low confidence.
+        confidence="high" if coupon_total == 0 else "low",
         status="ok",
     )
 
