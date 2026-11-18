@@ -6,7 +6,6 @@ import type {
   JobRun,
   ListingPayload,
   ListingPriceSeries,
-  ModelSearchResponse,
   NotificationStatus,
   PricePoint,
   PriceRange,
@@ -14,7 +13,6 @@ import type {
   ProductDetail,
   ProductSummary,
   ListingResolve,
-  SearchPlatform
 } from './types'
 
 function requireApi(): Window['api'] {
@@ -63,6 +61,17 @@ export function fetchAccounts(): Promise<Account[]> {
   return apiRequest<Account[]>('GET', '/api/v1/accounts')
 }
 
+export function fetchEdgeStatus(): Promise<{
+  selected_browser: 'edge' | 'chrome' | 'firefox'
+  jd_frequency_warning: boolean
+  connected_browsers: Array<'edge' | 'chrome' | 'firefox'>
+  connected: boolean
+  platforms: string[]
+  pending: number
+}> {
+  return apiRequest('GET', '/api/v1/edge/status')
+}
+
 export function startLogin(platform: string): Promise<{ started: boolean; message: string }> {
   return apiRequest('POST', `/api/v1/accounts/${platform}/login`)
 }
@@ -77,16 +86,6 @@ export function checkAccount(platform: string): Promise<Account> {
 
 export function resolveListing(url: string): Promise<ListingResolve> {
   return apiRequest<ListingResolve>('POST', '/api/v1/listings/resolve', { url })
-}
-
-export function searchModel(
-  query: string,
-  platform: SearchPlatform = 'jd'
-): Promise<ModelSearchResponse> {
-  return apiRequest<ModelSearchResponse>('POST', '/api/v1/listings/search-model', {
-    query,
-    platform
-  })
 }
 
 export function createProduct(payload: ProductCreatePayload): Promise<ProductSummary> {
@@ -106,6 +105,15 @@ export function fetchProducts(): Promise<ProductSummary[]> {
 
 export function fetchProduct(productId: number): Promise<ProductDetail> {
   return apiRequest<ProductDetail>('GET', `/api/v1/products/${productId}`)
+}
+
+export function updateProductMonitoring(
+  productId: number,
+  enabled: boolean
+): Promise<ProductSummary> {
+  return apiRequest<ProductSummary>('PATCH', `/api/v1/products/${productId}/monitoring`, {
+    enabled
+  })
 }
 
 export function fetchPrices(productId: number, range: PriceRange): Promise<PricePoint[]> {

@@ -24,6 +24,7 @@ from app.core.models import (
 )
 from app.core.price_engine import (
     is_new_low,
+    plausible_page_price_clause,
     record_product_snapshot,
     save_price_snapshot,
 )
@@ -228,6 +229,7 @@ def _latest_ok_snapshot(
             PriceSnapshot.status == "ok",
             PriceSnapshot.captured_at >= since,
             PriceSnapshot.effective_price_cents > 0,
+            plausible_page_price_clause(),
             or_(
                 PriceSnapshot.confidence.is_(None),
                 PriceSnapshot.confidence != "low",

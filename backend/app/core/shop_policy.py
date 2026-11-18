@@ -16,8 +16,6 @@ class ShopPolicyResult:
     reason: str
 
 
-ALLOWED_SHOP_TYPES = {"official_flagship", "jd_official_self"}
-
 BRAND_KEYWORDS: dict[str, tuple[str, ...]] = {
     "apple": ("apple", "苹果", "iphone", "ipad", "macbook"),
     "苹果": ("apple", "苹果", "iphone", "ipad", "macbook"),
@@ -56,40 +54,20 @@ def brand_matches(product_brand: str, haystack: str) -> bool:
     return any(_normalize_brand(keyword) in normalized for keyword in keywords)
 
 
-def evaluate_shop(info: ListingInfo, product_brand: str) -> ShopPolicyResult:
-    """Apply the official-store admission policy.
+def shop_brand_matches(product_brand: str, shop_name: str) -> bool:
+    """Allow a documented parent brand in an official shop name only.
 
-    Adapters only collect evidence; this function is the single place that
-    decides whether a listing may be monitored.
+    Product-title matching stays strict, so a vivo phone cannot match an
+    iQOO model query merely through this shop-name relationship.
     """
-    if info.shop_type == "unknown":
-        return ShopPolicyResult(ShopDecision.NEEDS_REVIEW, "店铺类型无法确认")
-    if info.shop_type not in ALLOWED_SHOP_TYPES:
-        return ShopPolicyResult(ShopDecision.REJECTED, "不是官方旗舰店/官方自营")
+    if brand_matches(product_brand, shop_name):
+        return True
+    return _normalize_brand(product_brand) == "iqoo" and "vivo" in _normalize_brand(shop_name)
 
-    if (
-        info.shop_type == "official_flagship"
-        and str(info.evidence.get("official_badge", "")).lower() != "true"
-    ):
-        return ShopPolicyResult(ShopDecision.NEEDS_REVIEW, "缺少官方旗舰店标识证据")
-    if (
-        info.shop_type == "jd_official_self"
-        and str(info.evidence.get("self_operated", "")).lower() != "true"
-    ):
-        return ShopPolicyResult(ShopDecision.NEEDS_REVIEW, "缺少京东自营标识证据")
 
-    brand_value = str(info.evidence.get("brand_match", "")).lower()
-    if brand_value == "false":
-        return ShopPolicyResult(ShopDecision.REJECTED, "店铺品牌与商品品牌不一致")
-    if brand_value != "true":
-        haystack = _normalize_brand(
-            f"{info.title} {info.shop_name} {info.evidence.get('shop_brand', '')}"
-        )
-        if not brand_matches(product_brand, haystack):
-            return ShopPolicyResult(ShopDecision.NEEDS_REVIEW, "未在标题/店铺名中确认品牌一致")
-
-    shop_brand = str(info.evidence.get("shop_brand", "")).strip()
-    if shop_brand and _normalize_brand(shop_brand) != _normalize_brand(product_brand):
-        return ShopPolicyResult(ShopDecision.REJECTED, "店铺品牌与商品品牌不一致")
-
-    return ShopPolicyResult(ShopDecision.ALLOWED, "官方店铺且品牌一致")
+def evaluate_shop(info: ListingInfo, product_brand: str) -> ShopPolicyResult:
+    """Any recognized JD, Taobao or Tmall item may be monitored."""
+    del product_brand
+    if info.platform not in ("jd", "taobao") or not info.platform_item_id:
+        return ShopPolicyResult(ShopDecision.REJECTED, "不是受支持的商品详情页")
+    return ShopPolicyResult(ShopDecision.ALLOWED, "商品链接可监测")

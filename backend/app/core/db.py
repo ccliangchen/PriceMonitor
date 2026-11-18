@@ -17,6 +17,34 @@ _SessionLocal: sessionmaker[Session] | None = None
 def _ensure_lightweight_migrations(engine: Engine) -> None:
     """Apply tiny additive migrations for databases created by older builds."""
     inspector = inspect(engine)
+    if "products" in inspector.get_table_names():
+        product_columns = {column["name"] for column in inspector.get_columns("products")}
+        if "monitoring_enabled" not in product_columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE products ADD COLUMN monitoring_enabled BOOLEAN "
+                        "NOT NULL DEFAULT 1"
+                    )
+                )
+    listing_columns = {column["name"] for column in inspector.get_columns("listings")}
+    if "capture_mode" not in listing_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE listings ADD COLUMN capture_mode VARCHAR(16) "
+                    "NOT NULL DEFAULT 'primary'"
+                )
+            )
+    # Older builds stored a permanent Edge preference. Taobao now tries the
+    # direct browser on every poll and uses Edge only in the failed round.
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE listings SET capture_mode='primary' "
+                "WHERE platform='taobao' AND capture_mode!='primary'"
+            )
+        )
     columns = {column["name"] for column in inspector.get_columns("price_snapshots")}
     if "confidence" not in columns:
         with engine.begin() as connection:
@@ -51,7 +79,7 @@ def _ensure_lightweight_migrations(engine: Engine) -> None:
             text(
                 "UPDATE price_snapshots SET confidence='high' "
                 "WHERE source='page' AND status='ok' "
-                "AND (confidence IS NULL OR confidence='low') "
+                "AND confidence IS NULL "
                 "AND page_price_cents IS NOT NULL "
                 "AND estimated_price_cents = page_price_cents "
                 "AND (coupon_discount_cents IS NULL OR coupon_discount_cents = 0) "
@@ -62,16 +90,6 @@ def _ensure_lightweight_migrations(engine: Engine) -> None:
             text(
                 "UPDATE price_snapshots SET confidence='low' "
                 "WHERE source='page' AND status='ok' AND confidence IS NULL"
-            )
-        )
-        connection.execute(
-            text(
-                "UPDATE price_snapshots SET confidence='high' "
-                "WHERE source='page' AND status='ok' AND confidence='low' "
-                "AND coupon_discount_cents=0 "
-                "AND page_price_cents IS NOT NULL "
-                "AND page_price_cents=estimated_price_cents "
-                "AND listing_id IN (SELECT id FROM listings WHERE platform='jd')"
             )
         )
 

@@ -4,13 +4,15 @@ import asyncio
 import re
 from contextlib import suppress
 from datetime import UTC, datetime
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from loguru import logger
-from playwright.async_api import Page
+from playwright.async_api import Page, Response
 
 from app.adapters.base import ListingInfo, LoginStatus, PriceQuote
 from app.adapters.jd.parser import (
+    ANY_PRICE_RE,
+    FINAL_PRICE_LABEL_RE,
     SkuVariant,
     extract_embedded_price_cents,
     extract_embedded_promotion_price_cents,
@@ -24,7 +26,12 @@ from app.adapters.jd.selectors import (
     PRICE_SELECTORS,
     SHOP_SELECTORS,
 )
-from app.core.exceptions import CaptchaRequired, LoginRequired, ParseError, ShopNotAllowed
+from app.core.exceptions import (
+    CaptchaRequired,
+    LoginRequired,
+    ParseError,
+    RateLimited,
+)
 from app.core.models import Account, Listing
 from app.core.product_query import suggest_fields_from_title
 from app.services.browser import BrowserService
@@ -63,7 +70,7 @@ class JdAdapter:
         if account is None:
             raise LoginRequired("请先登录京东")
         target = prefer_mobile_url(normalize_url(url))
-        async with self.browser.session(account.profile_dir, headless=True) as page:
+        async with self.browser.resident_session(account.profile_dir) as page:
             await self._goto(page, target)
             final_url = page.url
             title, body, price_texts, shop_texts, _coupon_texts = await self._read_page(page)
@@ -102,53 +109,10 @@ class JdAdapter:
             )
 
     async def fetch_page_price(self, listing: Listing, account: Account) -> PriceQuote:
-        return await self._fetch_page_quote(
-            listing,
-            account,
-            prefer_mobile_url(listing.url),
-        )
-
-    async def fetch_page_price_deep(
-        self,
-        listing: Listing,
-        account: Account,
-    ) -> PriceQuote:
-        """Manual-refresh path that also tries the desktop item page.
-
-        JD's desktop page exposes coupon/subsidy labels such as
-        ``国补后价`` and ``已享`` that the mobile page often omits. Desktop
-        item pages are frequently PC-rate-limited, so this is only used by
-        the explicit refresh action; scheduled polling stays on mobile.
-        """
-        mobile_quote = await self.fetch_page_price(listing, account)
-        sku = extract_sku(listing.url)
-        if sku is None:
-            return mobile_quote
-
-        try:
-            desktop_quote = await self._fetch_page_quote(
-                listing,
-                account,
-                f"https://item.jd.com/{sku}.html",
-            )
-        except Exception as exc:
-            logger.warning(
-                "JD desktop price probe failed for listing {}: {}",
-                listing.id,
-                exc,
-            )
-            return mobile_quote
-
-        mobile_price = mobile_quote.estimated_price_cents
-        desktop_price = desktop_quote.estimated_price_cents
-        if (
-            desktop_quote.status == "ok"
-            and desktop_price is not None
-            and desktop_price > 0
-            and (mobile_price is None or desktop_price < mobile_price)
-        ):
-            return desktop_quote
-        return mobile_quote
+        sku = extract_sku(listing.url) or listing.platform_item_id
+        if not sku or not sku.isdigit():
+            raise ParseError("京东商品缺少有效 SKU")
+        return await self._fetch_page_quote(listing, account, f"https://item.jd.com/{sku}.html")
 
     async def _fetch_page_quote(
         self,
@@ -156,71 +120,201 @@ class JdAdapter:
         account: Account,
         target_url: str,
     ) -> PriceQuote:
-        async with self.browser.session(account.profile_dir, headless=True) as page:
-            await self._goto(page, target_url)
+        async with self.browser.resident_session(account.profile_dir) as page:
+            response = await self._goto(page, target_url)
             final_url = page.url
+            final = urlparse(final_url)
+            reason = parse_qs(final.query).get("reason", [""])[0][:32]
+            logger.info(
+                "JD PC listing {} navigation: status={}, host={}, path={}, reason={}",
+                listing.id,
+                response.status if response is not None else "none",
+                final.hostname or "",
+                final.path,
+                reason,
+            )
+            if response is not None and response.status in (403, 429):
+                raise RateLimited("京东 PC 商品页拒绝访问，本轮未采价；下轮自动重试")
             title, body, price_texts, shop_texts, coupon_texts = await self._read_page(page)
-            self._assert_not_blocked(final_url, title, body)
-            if len(body.strip()) < 40:
-                raise CaptchaRequired("京东页面没有加载出内容，可能被限流，请稍后重试")
             html = await page.content()
-            parsed = parse_product_page(
-                url=final_url,
-                title=title,
-                body_text=body + "\n" + "\n".join(coupon_texts),
-                price_texts=price_texts,
-                shop_texts=shop_texts,
-                embedded_price_cents=extract_embedded_price_cents(html),
+            return self.quote_from_observation(
+                listing, final_url, title, body, price_texts,
+                shop_texts, coupon_texts, html,
             )
 
-            if parsed.shop_type == "other":
-                raise ShopNotAllowed("当前商品不是官方旗舰店/官方自营")
-            if parsed.shop_type not in ("unknown", listing.shop_type):
-                raise ShopNotAllowed("店铺类型发生变化，请重新确认")
-            self._assert_shop_unchanged(listing, parsed.shop_name)
-            if parsed.confidence == "high" and extract_sku(listing.url) is None:
-                parsed.confidence = "low"
-
-            promo_price = extract_embedded_promotion_price_cents(html)
-            if (
-                promo_price is not None
-                and parsed.status == "ok"
-                and (
-                    parsed.confidence == "low"
-                    or parsed.estimated_price_cents is None
-                    or promo_price < parsed.estimated_price_cents
+    def quote_from_observation(
+        self,
+        listing: Listing,
+        final_url: str,
+        title: str,
+        body: str,
+        price_texts: list[str],
+        shop_texts: list[str],
+        coupon_texts: list[str],
+        html: str,
+        primary_text: str = "",
+        primary_price_texts: list[str] | None = None,
+        require_primary: bool = False,
+    ) -> PriceQuote:
+        """Parse a JD PC page observed by either browser channel."""
+        self._assert_not_blocked(final_url, title, body)
+        expected_sku = extract_sku(listing.url) or listing.platform_item_id
+        if extract_sku(final_url) != expected_sku:
+            raise ParseError("京东商品页 SKU 与监控商品不一致")
+        if len(body.strip()) < 40:
+            raise RateLimited("京东 PC 商品页未加载出内容，本轮未采价；下轮自动重试")
+        previous_shop = re.sub(r"\s+", "", listing.shop_name or "")
+        title_section = (
+            _title_anchored_product_section(body, listing.title or title)
+            if require_primary else ""
+        )
+        anchored_body = (
+            _title_anchored_price_context(title_section)
+            if require_primary else ""
+        )
+        matching_shops = [
+            text
+            for text in shop_texts
+            if previous_shop and previous_shop in re.sub(r"\s+", "", text)
+        ]
+        seller_texts = matching_shops[:1] or shop_texts[:1]
+        if not seller_texts and title_section:
+            normalized_section = re.sub(r"\s+", "", title_section)
+            if previous_shop and previous_shop in normalized_section:
+                seller_texts = [listing.shop_name]
+            else:
+                section_shops = re.findall(
+                    r"[A-Za-z0-9\u4e00-\u9fff]{2,32}"
+                    r"(?:京东自营旗舰店|官方旗舰店|专营店|专卖店)",
+                    title_section,
                 )
-            ):
-                parsed.page_price_cents = parsed.page_price_cents or promo_price
-                parsed.estimated_price_cents = promo_price
-                if (
-                    parsed.page_price_cents is not None
-                    and parsed.page_price_cents > promo_price
+                if section_shops:
+                    seller_texts = [section_shops[0]]
+                elif (
+                    listing.shop_verified
+                    and listing.shop_type == "jd_official_self"
+                    and "京东自营" in title_section[:1200]
                 ):
-                    parsed.coupon_discount_cents = (
-                        parsed.page_price_cents - promo_price
-                    )
-                parsed.confidence = "high"
+                    seller_texts = [listing.shop_name]
+                elif listing.shop_verified and anchored_body:
+                    # A JD item URL identifies the same SKU as the verified
+                    # listing. Current layouts omit the seller selector, so
+                    # retain that verified seller when the product title and
+                    # nearby price both match the monitored item.
+                    seller_texts = [listing.shop_name]
+        price_body = anchored_body or (primary_text if require_primary and primary_text else body)
+        logger.info(
+            "JD listing {} price context: title_anchor={}, primary_region={}",
+            listing.id,
+            bool(anchored_body),
+            bool(primary_text),
+        )
+        parsed = parse_product_page(
+            url=final_url,
+            title=title,
+            body_text=price_body if require_primary else body + "\n" + "\n".join(coupon_texts),
+            price_texts=([] if anchored_body else (primary_price_texts or [])) if require_primary else price_texts,
+            shop_texts=seller_texts,
+            embedded_price_cents=extract_embedded_price_cents(html),
+        )
+        logger.info(
+            "JD listing {} seller: stored_type={}, observed_type={}, observed_name={}, candidates={}, matched={}",
+            listing.id,
+            listing.shop_type,
+            parsed.shop_type,
+            parsed.shop_name[:80],
+            len(shop_texts),
+            bool(matching_shops),
+        )
 
-            effective = parsed.estimated_price_cents or parsed.page_price_cents or 0
-            status = parsed.status
-            if status == "ok" and effective <= 0:
-                status = "parse_error"
+        if parsed.shop_name and parsed.shop_name != "未知店铺":
+            listing.shop_name = parsed.shop_name
+            listing.shop_type = parsed.shop_type
+        if parsed.confidence == "high" and extract_sku(listing.url) is None:
+            parsed.confidence = "low"
 
-            return PriceQuote(
-                platform=self.platform,
-                listing_id=listing.id,
-                source="page",
-                effective_price_cents=effective,
-                confidence=parsed.confidence,
-                captured_at=datetime.now(UTC),
-                page_price_cents=parsed.page_price_cents,
-                coupon_discount_cents=parsed.coupon_discount_cents,
-                estimated_price_cents=parsed.estimated_price_cents,
-                coupon_breakdown=parsed.coupon_breakdown,
-                status=status,
-                error=parsed.error,
+        promo_price = None if require_primary else extract_embedded_promotion_price_cents(html)
+        if (
+            promo_price is not None
+            and parsed.status == "ok"
+            and (
+                parsed.confidence == "low"
+                or parsed.estimated_price_cents is None
+                or promo_price < parsed.estimated_price_cents
             )
+        ):
+            parsed.page_price_cents = parsed.page_price_cents or promo_price
+            parsed.estimated_price_cents = promo_price
+            if parsed.page_price_cents is not None and parsed.page_price_cents > promo_price:
+                parsed.coupon_discount_cents = parsed.page_price_cents - promo_price
+            parsed.confidence = "high"
+        explicit_final_price = bool(FINAL_PRICE_LABEL_RE.search(price_body))
+        rejected_final_price = bool(
+            require_primary
+            and anchored_body
+            and parsed.status == "ok"
+            and parsed.page_price_cents
+            and parsed.estimated_price_cents
+            and parsed.estimated_price_cents * 4 < parsed.page_price_cents
+        )
+        if rejected_final_price:
+            # The first amount beside the monitored title is the main item
+            # price. A much smaller labelled amount later in the section can
+            # belong to a recommendation or another promotion. Keep the
+            # observed main price, without stacking any nearby coupons.
+            logger.warning(
+                "JD listing {} discarded implausible final label {} beside main price {}",
+                listing.id,
+                parsed.estimated_price_cents,
+                parsed.page_price_cents,
+            )
+            parsed.estimated_price_cents = parsed.page_price_cents
+            parsed.coupon_discount_cents = None
+            for item in parsed.coupon_breakdown:
+                item["applied"] = False
+            parsed.confidence = "high"
+            parsed.error = None
+        if require_primary and not (primary_text or anchored_body):
+            parsed.confidence = "low"
+        if (
+            not require_primary
+            and ("国补" in price_body or "补贴" in price_body)
+            and not explicit_final_price
+            and (promo_price is None or promo_price >= (parsed.page_price_cents or 0))
+        ):
+            parsed.confidence = "low"
+        logger.info(
+            "JD listing {} price: page={}, estimated={}, confidence={}, final_label={}, promo={}",
+            listing.id,
+            parsed.page_price_cents,
+            parsed.estimated_price_cents,
+            parsed.confidence,
+            explicit_final_price and not rejected_final_price,
+            promo_price,
+        )
+
+        effective = parsed.estimated_price_cents or parsed.page_price_cents or 0
+        status = parsed.status
+        if status == "ok" and effective <= 0:
+            status = "parse_error"
+        if parsed.page_price_cents and effective * 4 < parsed.page_price_cents:
+            parsed.confidence = "low"
+            parsed.error = "页面预估价远低于同页标价，本轮价格未采纳"
+
+        return PriceQuote(
+            platform=self.platform,
+            listing_id=listing.id,
+            source="page",
+            effective_price_cents=effective,
+            confidence=parsed.confidence,
+            captured_at=datetime.now(UTC),
+            page_price_cents=parsed.page_price_cents,
+            coupon_discount_cents=parsed.coupon_discount_cents,
+            estimated_price_cents=parsed.estimated_price_cents,
+            coupon_breakdown=parsed.coupon_breakdown,
+            status=status,
+            error=parsed.error,
+        )
 
     async def fetch_checkout_price(
         self,
@@ -235,7 +329,12 @@ class JdAdapter:
         quietly. This method never clicks "提交订单" or any payment button.
         """
         wait_seconds = 30 if headless else 180
-        async with self.browser.session(account.profile_dir, headless=headless) as page:
+        page_session = (
+            self.browser.session(account.profile_dir, headless=True)
+            if headless
+            else self.browser.resident_session(account.profile_dir)
+        )
+        async with page_session as page:
             await self._goto(page, prefer_mobile_url(listing.url))
             await _click_exact_text(page, "立即购买")
 
@@ -296,7 +395,7 @@ class JdAdapter:
         url: str,
         account: Account,
     ) -> tuple[str, list[SkuVariant]]:
-        async with self.browser.session(account.profile_dir, headless=True) as page:
+        async with self.browser.resident_session(account.profile_dir) as page:
             await self._goto(page, prefer_mobile_url(normalize_url(url)))
             final_url = page.url
             title, body, _price_texts, _shop_texts, _coupon_texts = await self._read_page(page)
@@ -307,7 +406,7 @@ class JdAdapter:
             return title, parse_sku_variants(html)
 
     async def login(self, account: Account) -> LoginStatus:
-        async with self.browser.session(account.profile_dir, headless=False) as page:
+        async with self.browser.resident_session(account.profile_dir) as page:
             await page.goto(JD_LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
             await page.wait_for_timeout(1500)
             deadline = asyncio.get_running_loop().time() + LOGIN_TIMEOUT_SECONDS
@@ -331,9 +430,9 @@ class JdAdapter:
 
     async def open_verification(self, listing: Listing, account: Account) -> LoginStatus:
         """Open a headed JD page and wait for the user to clear a verification."""
-        async with self.browser.session(account.profile_dir, headless=False) as page:
+        async with self.browser.resident_session(account.profile_dir) as page:
             await page.goto(
-                prefer_mobile_url(listing.url),
+                f"https://item.jd.com/{listing.platform_item_id}.html",
                 wait_until="domcontentloaded",
                 timeout=60_000,
             )
@@ -361,7 +460,7 @@ class JdAdapter:
         raise CaptchaRequired("等待验证超时，请重试")
 
     async def check_login(self, account: Account) -> LoginStatus:
-        async with self.browser.session(account.profile_dir, headless=True) as page:
+        async with self.browser.resident_session(account.profile_dir) as page:
             try:
                 await page.goto(JD_HOME_URL, wait_until="domcontentloaded", timeout=60_000)
                 await page.wait_for_timeout(1000)
@@ -380,8 +479,8 @@ class JdAdapter:
                 ),
             )
 
-    async def _goto(self, page: Page, url: str) -> None:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    async def _goto(self, page: Page, url: str) -> Response | None:
+        response = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         # Mobile JD pages render the price asynchronously. Wait for a visible
         # currency amount instead of relying on a fixed sleep.
         with suppress(Exception):
@@ -390,6 +489,7 @@ class JdAdapter:
                 timeout=8_000,
             )
         await page.wait_for_timeout(1_000)
+        return response
 
     async def _read_page(
         self, page: Page
@@ -405,23 +505,13 @@ class JdAdapter:
         return title, body, price_texts, shop_texts, coupon_texts
 
     @staticmethod
-    def _assert_shop_unchanged(listing: Listing, current_shop_name: str) -> None:
-        previous = re.sub(r"\s+", "", listing.shop_name or "")
-        current = re.sub(r"\s+", "", current_shop_name or "")
-        if not previous or not current or current == "未知店铺":
-            return
-        if previous == current or previous in current or current in previous:
-            return
-        raise ShopNotAllowed("店铺名称发生变化，已暂停监控，请重新确认官方店铺")
-
-    @staticmethod
     def _assert_not_blocked(url: str, title: str, body: str) -> None:
         if (
             "pc-frequent-pro" in url
             or "PC频控页" in title
             or "暂时无法展示该商品的信息" in body
         ):
-            raise CaptchaRequired("京东访问频繁（PC频控），请稍后重试或改用移动版链接")
+            raise RateLimited("京东 PC 商品页频控，本轮未采价；下轮自动重试")
         rate_limit_phrases = (
             "访问频繁",
             "系统繁忙",
@@ -433,10 +523,10 @@ class JdAdapter:
             "排队进场",
         )
         if any(phrase in title or phrase in body for phrase in rate_limit_phrases):
-            raise CaptchaRequired("京东访问频繁，请稍后重试（不要连续刷新）")
+            raise RateLimited("京东访问频繁，本轮未采价；下轮自动重试")
         if "risk_handler" in url or "京东验证" in title or "验证一下" in body:
             raise CaptchaRequired("京东触发验证，请稍后重试或手动登录")
-        if "passport.jd.com" in url or "请登录" in body:
+        if "passport.jd.com" in url:
             raise LoginRequired("京东登录态失效，请重新登录")
 
 
@@ -526,6 +616,36 @@ def prefer_mobile_url(url: str) -> str:
     if parsed.netloc.lower() == "item.jd.com":
         return f"https://item.m.jd.com/product/{sku}.html"
     return url
+
+
+def _title_anchored_product_section(body: str, title: str) -> str:
+    """Find the product details adjoining the monitored title."""
+    normalized_body = re.sub(r"\s+", " ", body)
+    normalized_title = clean_title(title)
+    for length in (36, 28, 20):
+        if len(normalized_title) < length:
+            continue
+        start = normalized_body.find(normalized_title[:length])
+        if start < 0:
+            continue
+        section = normalized_body[start + length : start + length + 2500]
+        for boundary in ("商品详情", "猜你喜欢", "为你推荐", "看了又看"):
+            boundary_at = section.find(boundary)
+            if boundary_at >= 0:
+                section = section[:boundary_at]
+        return section
+    return ""
+
+
+def _title_anchored_price_context(section: str) -> str:
+    """Use the first non-coupon currency amount beside the product title."""
+    nearby = section[:650]
+    for match in ANY_PRICE_RE.finditer(nearby):
+        prefix = nearby[max(0, match.start() - 12) : match.start()]
+        if any(word in prefix for word in ("领后减", "领券后减", "优惠券", "满减")):
+            continue
+        return section[match.start() : match.start() + 500]
+    return ""
 
 
 def clean_title(title: str) -> str:

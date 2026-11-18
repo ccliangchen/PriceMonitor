@@ -25,7 +25,7 @@ import {
   testNotification,
   updateSettings
 } from '@/lib/api'
-import type { AppSettings, NotificationChannel } from '@/lib/types'
+import type { AppSettings, CaptureBrowser, NotificationChannel } from '@/lib/types'
 
 const inputClass =
   'mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200'
@@ -51,6 +51,7 @@ export default function SettingsPage(): JSX.Element {
   })
 
   const [pollInterval, setPollInterval] = useState(30)
+  const [captureBrowser, setCaptureBrowser] = useState<CaptureBrowser>('edge')
   const [checkoutHours, setCheckoutHours] = useState(6)
   const [channel, setChannel] = useState<NotificationChannel>('serverchan')
   const [closeToTray, setCloseToTray] = useState(true)
@@ -63,6 +64,7 @@ export default function SettingsPage(): JSX.Element {
       return
     }
     setPollInterval(data.poll_interval_minutes)
+    setCaptureBrowser(data.capture_browser)
     setCheckoutHours(data.checkout_interval_hours)
     setChannel(data.notification_channel)
     setCloseToTray(data.close_to_tray)
@@ -111,6 +113,7 @@ export default function SettingsPage(): JSX.Element {
   function handleSettingsSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
     settingsMutation.mutate({
+      capture_browser: captureBrowser,
       poll_interval_minutes: pollInterval,
       checkout_interval_hours: checkoutHours,
       notification_channel: channel,
@@ -189,6 +192,22 @@ export default function SettingsPage(): JSX.Element {
               </span>
             </label>
           </div>
+
+          <label className={`${labelClass} mt-5 block`}>
+            采价扩展使用的浏览器
+            <select
+              value={captureBrowser}
+              onChange={(event) => setCaptureBrowser(event.target.value as CaptureBrowser)}
+              className={inputClass}
+            >
+              <option value="edge">Microsoft Edge</option>
+              <option value="chrome">Google Chrome</option>
+              <option value="firefox">Mozilla Firefox</option>
+            </select>
+            <span className="mt-1 block text-xs font-normal text-slate-500">
+              三个浏览器只能选择其一；保存后立即切换。也可在“账号管理”随时切换。
+            </span>
+          </label>
 
           <label className={`${labelClass} mt-5 block`}>
             默认通知渠道

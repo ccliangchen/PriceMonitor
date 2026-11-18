@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.api.routes_accounts import router as accounts_router
+from app.api.routes_edge_bridge import router as edge_router
 from app.api.routes_health import router as health_router
 from app.api.routes_jobs import router as jobs_router
 from app.api.routes_listings import router as listings_router
@@ -16,4 +17,5 @@ api_router.include_router(accounts_router)
 api_router.include_router(listings_router)
 api_router.include_router(products_router)
 api_router.include_router(jobs_router)
+api_router.include_router(edge_router)
 api_router.include_router(notifications_router)

@@ -10,8 +10,14 @@ files:
   - resources/**/*
   - package.json
 extraResources:
-  - from: backend/dist/price-monitor-backend
+  - from: backend/package-dist/price-monitor-backend
     to: backend
+  - from: backend/packaging/edge-native-host.json
+    to: backend/edge-native-host.json
+  - from: backend/packaging/com.pricemonitor.jd_edge.json
+    to: backend/com.pricemonitor.jd_edge.json
+  - from: extension
+    to: edge-extension
 compression: normal
 win:
   target:

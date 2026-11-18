@@ -7,7 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.adapters.registry import get_adapter
 from app.core.db import get_db
-from app.core.exceptions import CaptchaRequired, LoginRequired, ParseError, ShopNotAllowed
+from app.core.exceptions import (
+    CaptchaRequired,
+    LoginRequired,
+    ParseError,
+    RateLimited,
+    ShopNotAllowed,
+)
 from app.core.models import Listing, PriceSnapshot
 from app.core.platforms import detect_platform, platform_label
 from app.core.schemas import (
@@ -15,13 +21,10 @@ from app.core.schemas import (
     ListingResolveRequest,
     ListingResolveResponse,
     LoginStartedResponse,
-    ModelSearchRequest,
-    ModelSearchResponse,
 )
-from app.core.shop_policy import ALLOWED_SHOP_TYPES, ShopDecision
 from app.services.accounts import ensure_platform_account
 from app.services.checkout import checkout_cooldown_remaining, start_checkout_calibration
-from app.services.model_search import search_model as run_model_search
+from app.services.listing_resolution import resolve_with_browser_extension
 from app.services.verification import start_verification
 
 router = APIRouter()
@@ -40,18 +43,33 @@ async def resolve_listing(
 
     account = ensure_platform_account(db, request.app.state.settings, platform)
     label = platform_label(platform)
-    if account.status != "logged_in":
-        raise HTTPException(status_code=409, detail=f"请先登录{label}，再解析商品链接")
-
     adapter = get_adapter(platform)
     if adapter is None:
         raise HTTPException(status_code=503, detail=f"{label}适配器未注册")
 
     try:
-        info = await adapter.resolve_listing(payload.url, account)
+        if platform == "jd":
+            info = await resolve_with_browser_extension(platform, payload.url)
+            source = "selected_browser"
+        elif account.status == "logged_in":
+            try:
+                info = await adapter.resolve_listing(payload.url, account)
+                source = "app_browser"
+            except (LoginRequired, CaptchaRequired, RateLimited, ParseError) as direct_error:
+                logger.warning(
+                    "Taobao link direct resolve failed ({}); starting selected browser if needed",
+                    direct_error,
+                )
+                info = await resolve_with_browser_extension(platform, payload.url)
+                source = "selected_browser"
+        else:
+            info = await resolve_with_browser_extension(platform, payload.url)
+            source = "selected_browser"
     except LoginRequired as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CaptchaRequired as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RateLimited as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -61,21 +79,7 @@ async def resolve_listing(
         logger.exception("Failed to resolve listing")
         raise HTTPException(status_code=502, detail=f"解析{label}商品失败：{exc}") from exc
 
-    if info.shop_type == "other":
-        decision = ShopDecision.REJECTED
-        reason = "不是官方旗舰店/官方自营"
-    elif info.shop_type == "unknown":
-        decision = ShopDecision.NEEDS_REVIEW
-        reason = "店铺类型无法确认，缺少官方标识"
-    elif info.shop_type == "official_flagship" and info.evidence.get("official_badge") != "true":
-        decision = ShopDecision.NEEDS_REVIEW
-        reason = "缺少官方旗舰店标识证据"
-    elif info.shop_type == "jd_official_self" and info.evidence.get("self_operated") != "true":
-        decision = ShopDecision.NEEDS_REVIEW
-        reason = "缺少京东自营标识证据"
-    else:
-        decision = ShopDecision.ALLOWED
-        reason = "官方店铺；创建时会按品牌再次校验"
+    logger.info("Resolved {} link item={} via {}", platform, info.platform_item_id, source)
 
     return ListingResolveResponse(
         platform=info.platform,
@@ -87,37 +91,9 @@ async def resolve_listing(
         platform_sku_id=info.platform_sku_id,
         detected_specs=info.detected_specs,
         evidence=info.evidence,
-        decision=decision.value,
-        decision_reason=reason,
+        decision="allowed",
+        decision_reason="商品链接已解析；店铺类型不影响监测",
     )
-
-
-@router.post("/listings/search-model", response_model=ModelSearchResponse)
-async def search_model(
-    payload: ModelSearchRequest,
-    request: Request,
-    db: DbSession,
-) -> ModelSearchResponse:
-    account = ensure_platform_account(db, request.app.state.settings, payload.platform)
-    label = platform_label(payload.platform)
-    if account.status != "logged_in":
-        raise HTTPException(status_code=409, detail=f"请先登录{label}，再搜索官方店商品")
-
-    try:
-        result = await run_model_search(payload.query, payload.platform, account)
-    except LoginRequired as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except CaptchaRequired as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except ParseError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.exception("Model search failed")
-        raise HTTPException(status_code=502, detail=f"搜索{label}官方店失败：{exc}") from exc
-
-    return ModelSearchResponse(**result)
 
 
 @router.patch("/listings/{listing_id}")
@@ -131,16 +107,10 @@ def update_listing(
         raise HTTPException(status_code=404, detail="商品链接不存在")
 
     if payload.status is not None:
-        if payload.status == "active" and (
-            not listing.shop_verified
-            or listing.shop_type not in ALLOWED_SHOP_TYPES
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="该链接未通过官方店铺校验，不能恢复监控",
-            )
         listing.status = payload.status
         if payload.status == "active":
+            if listing.platform == "taobao":
+                listing.capture_mode = "primary"
             # Clear stale failure records so the consecutive-failure counter
             # starts from zero after a manual resume.
             db.execute(

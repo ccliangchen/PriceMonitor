@@ -11,20 +11,26 @@ import {
 } from 'lucide-react'
 
 import { PageHeader } from '@/components/PageHeader'
-import { checkAccount, fetchAccounts, logoutAccount, startLogin } from '@/lib/api'
+import { checkAccount, fetchAccounts, fetchEdgeStatus, fetchSettings, logoutAccount, startLogin, updateSettings } from '@/lib/api'
 import { formatDateTime, statusLabel } from '@/lib/format'
-import type { Account } from '@/lib/types'
+import type { Account, CaptureBrowser } from '@/lib/types'
+
+const BROWSERS: Array<{ key: CaptureBrowser; label: string }> = [
+  { key: 'edge', label: 'Edge' },
+  { key: 'chrome', label: 'Google Chrome' },
+  { key: 'firefox', label: 'Firefox' }
+]
 
 const PLATFORMS = [
   {
     key: 'jd',
     label: '京东',
-    note: '仅允许京东官方自营、官方旗舰店'
+    note: '支持京东商品详情页，不限店铺类型'
   },
   {
     key: 'taobao',
     label: '淘宝 / 天猫',
-    note: '仅允许天猫官方旗舰店'
+    note: '支持淘宝和天猫商品详情页，不限店铺类型'
   }
 ] as const
 
@@ -253,17 +259,35 @@ function PlatformCard({
 }
 
 export default function Accounts(): JSX.Element {
+  const queryClient = useQueryClient()
   const accounts = useQuery({
     queryKey: ['accounts'],
     queryFn: fetchAccounts,
     refetchInterval: 3000
   })
+  const edge = useQuery({
+    queryKey: ['edge-status'],
+    queryFn: fetchEdgeStatus,
+    refetchInterval: 5000
+  })
+  const settings = useQuery({
+    queryKey: ['settings'],
+    queryFn: fetchSettings
+  })
+  const switchBrowser = useMutation({
+    mutationFn: (browser: CaptureBrowser) => updateSettings({ capture_browser: browser }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['settings'], data)
+      void queryClient.invalidateQueries({ queryKey: ['edge-status'] })
+    }
+  })
+  const selectedBrowser = settings.data?.capture_browser ?? edge.data?.selected_browser ?? 'edge'
 
   return (
     <div>
       <PageHeader
         title="账号管理"
-        description="使用自己的账号扫码登录，应用不保存账号密码。"
+        description="同一个扩展可在 Edge、Chrome 或 Firefox 中读取京东链接与价格，并作为淘宝链接和采价的备用通道。"
       >
         <button
           type="button"
@@ -283,6 +307,40 @@ export default function Accounts(): JSX.Element {
       ) : null}
 
       <div className="space-y-4">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5">
+          <div className="flex items-center gap-3">
+            <h2 className="text-base font-semibold text-slate-900">京东＋淘宝 · 浏览器扩展</h2>
+            <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${edge.data?.connected ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+              {edge.data?.connected ? '扩展在线' : '浏览器待启动'}
+            </span>
+          </div>
+          <p className="mt-2 text-sm text-slate-600">京东链接信息和价格都通过扩展读取；淘宝先用应用浏览器，失败时使用扩展。浏览器无需一直打开，采价时会自动启动独立后台窗口；请保持两个平台的登录状态。</p>
+          <p className="mt-3 text-sm font-medium text-slate-700">选择采价浏览器（三选一，可随时切换）</p>
+          <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label="采价浏览器">
+            {BROWSERS.map((browser) => (
+              <button
+                key={browser.key}
+                type="button"
+                aria-pressed={selectedBrowser === browser.key}
+                onClick={() => switchBrowser.mutate(browser.key)}
+                disabled={switchBrowser.isPending || settings.isPending}
+                className={`rounded-lg border px-3 py-2 text-sm font-medium transition disabled:opacity-50 ${
+                  selectedBrowser === browser.key
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {browser.label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-slate-500">只由所选浏览器的扩展领取采价任务；切换后立即生效。采价窗口不会复用、切换或关闭用户正在使用的窗口。</p>
+          {switchBrowser.isError ? (
+            <p className="mt-2 text-xs text-rose-600">{switchBrowser.error instanceof Error ? switchBrowser.error.message : '切换失败'}</p>
+          ) : null}
+          <p className="mt-2 text-xs text-slate-500">所选浏览器当前状态：京东 {edge.data?.platforms.includes('jd') ? '扩展在线' : '等待自动启动'} · 淘宝备用 {edge.data?.platforms.includes('taobao') ? '扩展在线' : '等待自动启动'}。在线浏览器：{edge.data?.connected_browsers.length ? edge.data.connected_browsers.map((item) => BROWSERS.find((browser) => browser.key === item)?.label ?? item).join('、') : '无'}。</p>
+          <p className="mt-1 text-xs text-slate-400">扩展目录：PriceMonitor 安装目录 / resources / edge-extension。Edge 打开 edge://extensions，Chrome 打开 chrome://extensions，启用开发者模式后加载解压缩扩展；Firefox 在 about:debugging 临时载入 manifest.json，常驻安装需要 Mozilla 签名。</p>
+        </section>
         {PLATFORMS.map((platform) => (
           <PlatformCard
             key={platform.key}
@@ -295,14 +353,14 @@ export default function Accounts(): JSX.Element {
       <div className="mt-6 flex items-start gap-3 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm leading-6 text-sky-800">
         <Info className="mt-0.5 h-4 w-4 shrink-0" />
         <p>
-          价格和优惠会随账号、地区、已领券/已领补贴状态变化。请确认卡片中显示的“账号”和你浏览器里看到价格的账号一致；如果不一致，请退出后重新扫码登录。应用只读取页面当前展示的价格，不会自动领券或领取补贴。
+          价格和优惠会随账号、地区、已领券/已领补贴状态变化。扩展采价使用所选浏览器的账号；应用内淘宝登录用于常规采价。即使三个浏览器同时运行，也只有所选浏览器领取任务。应用只读取页面当前展示的价格，不会自动领券或领取补贴。
         </p>
       </div>
 
       <div className="mt-4 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
         <p>
-          登录态只保存在本机浏览器配置目录；应用不保存账号密码，不绕过验证码。自动化访问可能触发平台风控，请自行评估账号风险。淘宝/天猫的风控比京东更严格，建议使用不常用的账号并降低刷新频率。
+          登录态只保存在本机浏览器配置目录；应用不保存账号密码。淘宝备用采价在直接抓取失败的同一轮运行；若扩展所在浏览器页面也受限，本轮不采用价格并等待下一轮。
         </p>
       </div>
     </div>

@@ -50,12 +50,13 @@ export function registerIpc(
         body = JSON.stringify(request.body)
       }
 
-      const timeoutMs = path.includes('/listings/search-model') ? 180000 : 30000
       const response = await fetch(`${sidecar.info.baseUrl}${path}`, {
         method,
         headers,
         body,
-        signal: AbortSignal.timeout(timeoutMs)
+        // Link resolution can try the app browser and then wait for the
+        // selected browser extension. Its bridge has a 150-second deadline.
+        signal: AbortSignal.timeout(path === '/api/v1/listings/resolve' ? 240000 : 30000)
       })
       const text = await response.text()
       let data: unknown = null
@@ -69,10 +70,13 @@ export function registerIpc(
       return { ok: response.ok, status: response.status, data }
     } catch (error) {
       log.error('API proxy failed', error)
+      const timedOut = error instanceof Error && error.name === 'TimeoutError'
       return {
         ok: false,
         status: 0,
-        error: `请求后端失败：${error instanceof Error ? error.message : String(error)}`
+        error: timedOut && request?.path === '/api/v1/listings/resolve'
+          ? '读取商品链接超时，浏览器扩展可能未返回页面；请检查所选浏览器和扩展状态'
+          : `请求后端失败：${error instanceof Error ? error.message : String(error)}`
       }
     }
   })

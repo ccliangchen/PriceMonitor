@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
-from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
+from playwright.async_api import BrowserContext, Error, Page, Playwright, async_playwright
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -19,6 +19,7 @@ class BrowserService:
         self._contexts: dict[str, BrowserContext] = {}
         self._headless: dict[str, bool] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._resident_pages: dict[str, Page] = {}
 
     async def start(self) -> None:
         if self._playwright is None:
@@ -65,6 +66,7 @@ class BrowserService:
         return context
 
     async def close_context(self, profile_dir: str) -> None:
+        self._resident_pages.pop(profile_dir, None)
         context = self._contexts.pop(profile_dir, None)
         self._headless.pop(profile_dir, None)
         if context is not None:
@@ -83,3 +85,29 @@ class BrowserService:
                 with suppress(Exception):
                     await page.close()
                 await self.close_context(profile_dir)
+
+    @asynccontextmanager
+    async def resident_session(self, profile_dir: str) -> AsyncIterator[Page]:
+        """Reuse one headed Edge context and tab until logout or app shutdown."""
+        async with self._lock(profile_dir):
+            context = await self._open_context(profile_dir, headless=False)
+            page = self._resident_pages.get(profile_dir)
+            if page is None or page.is_closed():
+                try:
+                    page = next((item for item in context.pages if not item.is_closed()), None)
+                    if page is None:
+                        page = await context.new_page()
+                except Error:
+                    # The user may have closed Edge since the previous poll.
+                    await self.close_context(profile_dir)
+                    context = await self._open_context(profile_dir, headless=False)
+                    page = next((item for item in context.pages if not item.is_closed()), None)
+                    if page is None:
+                        page = await context.new_page()
+                self._resident_pages[profile_dir] = page
+            try:
+                yield page
+            except Error:
+                if page.is_closed():
+                    await self.close_context(profile_dir)
+                raise

@@ -59,6 +59,9 @@ class Product(Base):
     color: Mapped[str | None] = mapped_column(String(50), nullable=True)
     canonical_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    monitoring_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), default=utcnow, nullable=False
     )
@@ -100,6 +103,9 @@ class Listing(Base):
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(
         String(32), default="needs_review", nullable=False, index=True
+    )
+    capture_mode: Mapped[str] = mapped_column(
+        String(16), default="primary", nullable=False
     )
     last_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

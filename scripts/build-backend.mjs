@@ -22,7 +22,7 @@ console.log(`[build-backend] using Python: ${python}`)
 
 const result = spawnSync(
   python,
-  ['-m', 'PyInstaller', '--noconfirm', '--clean', specFile],
+  ['-m', 'PyInstaller', '--noconfirm', '--clean', '--distpath', 'package-dist', specFile],
   {
     cwd: backendDir,
     stdio: 'inherit',
@@ -45,7 +45,7 @@ if (result.status !== 0) {
 
 const exePath = join(
   backendDir,
-  'dist',
+  'package-dist',
   'price-monitor-backend',
   process.platform === 'win32' ? 'price-monitor-backend.exe' : 'price-monitor-backend'
 )

@@ -17,6 +17,7 @@ class HealthResponse(BaseModel):
 
 
 class SettingsResponse(BaseModel):
+    capture_browser: Literal["edge", "chrome", "firefox"] = "edge"
     poll_interval_minutes: int = 30
     checkout_interval_hours: int = 6
     close_to_tray: bool = True
@@ -30,6 +31,7 @@ class SettingsResponse(BaseModel):
 class SettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    capture_browser: Literal["edge", "chrome", "firefox"] | None = None
     poll_interval_minutes: int | None = Field(default=None, ge=10, le=180)
     checkout_interval_hours: int | None = Field(default=None, ge=4, le=12)
     close_to_tray: bool | None = None
@@ -92,14 +94,26 @@ class ListingPatch(BaseModel):
 
 class ProductCreateRequest(BaseModel):
     name: str = Field(min_length=1)
-    brand: str = Field(min_length=1)
-    model: str = Field(min_length=1)
+    brand: str = ""
+    model: str = ""
     variant: str = ""
-    ram_gb: int = Field(ge=1)
-    storage_gb: int = Field(ge=1)
+    ram_gb: int = Field(default=0, ge=0)
+    storage_gb: int = Field(default=0, ge=0)
     color: str | None = None
     notes: str | None = None
-    listing: ListingCreate
+    listing: ListingCreate | None = None
+
+
+class ProductBatchCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    brand: str = ""
+    model: str = ""
+    variant: str = ""
+    ram_gb: int = Field(default=0, ge=0)
+    storage_gb: int = Field(default=0, ge=0)
+    color: str | None = None
+    notes: str | None = None
+    listings: list[ListingCreate] = Field(min_length=1)
 
 
 class ProductSummary(BaseModel):
@@ -113,16 +127,28 @@ class ProductSummary(BaseModel):
     color: str | None
     current_price_cents: int | None
     current_platform: str | None
+    current_shop_name: str | None = None
     current_source: str | None
     current_confidence: str | None = None
     history_low_cents: int | None
+    history_low_platform: str | None = None
+    history_low_shop_name: str | None = None
     last_checked_at: datetime | None
     page_low_cents: int | None = None
+    page_low_platform: str | None = None
+    page_low_shop_name: str | None = None
     checkout_low_cents: int | None = None
     checkout_last_at: datetime | None = None
     listing_count: int
+    monitoring_enabled: bool = True
     status: str
     created_at: datetime
+
+
+class ProductMonitoringPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
 
 
 class ListingDetail(BaseModel):
@@ -134,6 +160,7 @@ class ListingDetail(BaseModel):
     shop_type: str
     shop_verified: bool
     status: str
+    capture_mode: str = "primary"
     last_checked_at: datetime | None
     page_price_cents: int | None = None
     estimated_price_cents: int | None = None
@@ -187,47 +214,6 @@ class JobRunResponse(BaseModel):
     finished_at: datetime | None
     status: str
     error_message: str | None
-
-
-class ModelSearchRequest(BaseModel):
-    query: str = Field(min_length=1)
-    platform: Platform = "jd"
-
-
-class ParsedProductQuery(BaseModel):
-    brand: str
-    model: str
-    variant: str
-    ram_gb: int | None
-    storage_gb: int | None
-
-
-class SkuVariantOption(BaseModel):
-    ram_gb: int | None
-    storage_gb: int | None
-    color: str
-    spec: str
-    sku_id: str
-    url: str
-
-
-class ModelSearchCandidate(BaseModel):
-    platform: Platform = "jd"
-    store_name: str
-    store_type: str
-    model_url: str | None
-    title: str | None
-    requested_available: bool = False
-    matched_sku_id: str | None = None
-    platform_item_id: str | None = None
-    shop_evidence: dict[str, str] = Field(default_factory=dict)
-    variants: list[SkuVariantOption] = Field(default_factory=list)
-    error: str | None = None
-
-
-class ModelSearchResponse(BaseModel):
-    query: ParsedProductQuery
-    candidates: list[ModelSearchCandidate] = Field(default_factory=list)
 
 
 class NotificationConfigRequest(BaseModel):

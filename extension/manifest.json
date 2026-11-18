@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "PriceMonitor 京东淘宝采价",
+  "version": "0.2.21",
+  "description": "在日常 Edge、Chrome 或 Firefox 中读取京东及淘宝电脑版商品页价格并交给本机 PriceMonitor。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6X7vHwN7NP5rLWDIXAsdJA9mpzMQbsz4CoGB0XGqI+fioTf+9LlPphucdqdiQa8hMPVYRaZsWtPtsQnvcXzxCFR4xz7vIKAKInERmfNagSKwnzVNajegqUpgVeoSsZ2m44PiauWpFK66BL4AZdmL/ptNlZz5ZHnyPzAf5rFLIB9++P4gnT2N5z9wCBs+MH/DPzu9X47v1g8S2BD7+8IJ2wnvUrGeDhj0RhlKuAykXpSOPlsI5mlRXljL9wd0Sl4tNQdHbIHDZx/YgH6S6nK14UkKjF7l88QaY6xG7D32m7NGRpESfHvuTR2lZBnngmjEv6WFFhEvyuzSknfWS/KkswIDAQAB",
+  "permissions": ["nativeMessaging", "tabs", "scripting", "alarms", "storage"],
+  "host_permissions": ["https://item.jd.com/*", "https://*.jd.com/*", "https://*.taobao.com/*", "https://*.tmall.com/*"],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "pricemonitor@price-monitor.local",
+      "strict_min_version": "128.0",
+      "data_collection_permissions": { "required": ["websiteContent"] }
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
+  "action": { "default_title": "PriceMonitor 京东淘宝采价", "default_popup": "popup.html" }
+}

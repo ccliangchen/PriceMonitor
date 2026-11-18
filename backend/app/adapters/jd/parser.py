@@ -11,7 +11,7 @@ from app.adapters.base import PriceConfidence, QuoteStatus, ShopType
 PRICE_NUMBER = r"([0-9][0-9,]*(?:\.[0-9]{1,2})?)"
 TO_PRICE_RE = re.compile(rf"到手价[^\d]{{0,12}}{PRICE_NUMBER}")
 FINAL_PRICE_LABEL_RE = re.compile(
-    rf"(?:预估到手价|预计到手价|国补后价|国补价|补贴后价|券后价|到手价|实付价)"
+    rf"(?:预估到手价|预计到手价|国补领后价|国补后价|国补价|补贴后价|券后价|到手价|实付价)"
     rf"[^\d]{{0,16}}{PRICE_NUMBER}"
 )
 JD_PRICE_RE = re.compile(rf"京东价[^\d]{{0,12}}{PRICE_NUMBER}")
@@ -24,7 +24,7 @@ PROMOTION_AMOUNT_RE = re.compile(
 CLAIM_DISCOUNT_RE = re.compile(
     rf"(?:领后减|领券后减)[^\d]{{0,6}}(?:¥|￥)?\s*{PRICE_NUMBER}"
 )
-APPLIED_DISCOUNT_SECTION_RE = re.compile(r"(?:已享|可再享)[：:]")
+APPLIED_DISCOUNT_SECTION_RE = re.compile(r"已享受?[：:]")
 NOISE_PRICE_WORDS = ("月", "白条", "定金", "首付", "每期", "分期")
 NOISE_PRICE_RE = re.compile(r"\d+\s*期")
 EMBEDDED_PRICE_RE = re.compile(
@@ -96,6 +96,7 @@ def _first_plausible_price(texts: Iterable[str]) -> int | None:
 def _parse_coupons(text: str, page_price_cents: int | None) -> tuple[int, list[dict]]:
     breakdown: list[dict] = []
     seen: set[str] = set()
+    seen_discounts: set[tuple[str, int]] = set()
     total = 0
 
     for match in COUPON_THRESHOLD_RE.finditer(text):
@@ -170,6 +171,11 @@ def _parse_coupons(text: str, page_price_cents: int | None) -> tuple[int, list[d
         amount = parse_price_cents(match.group(1))
         if amount is None:
             continue
+        # The same JD benefit often appears twice with different currency
+        # glyphs (¥ and ￥). Its wording is not a stacking guarantee.
+        if ("领后减", amount) in seen_discounts:
+            continue
+        seen_discounts.add(("领后减", amount))
         applicable = page_price_cents is not None and page_price_cents > amount
         breakdown.append(
             {
@@ -191,7 +197,11 @@ def _parse_coupons(text: str, page_price_cents: int | None) -> tuple[int, list[d
 def _detect_shop(shop_texts: Iterable[str], body_text: str) -> tuple[str, ShopType, dict[str, str]]:
     texts = [text.strip() for text in shop_texts if text.strip()]
     shop_blob = " ".join(texts)
-    combined = f"{shop_blob} {body_text}"
+    # The whole page also contains recommended shops. Use the actual seller
+    # element when available; body text is only a fallback for older layouts.
+    combined = shop_blob if texts else body_text
+    if not texts and "京东自营" in combined and "官方旗舰店" in combined:
+        return "未知店铺", "unknown", {}
 
     if "京东自营" in combined or any("自营" in text for text in texts):
         shop_name = next(
@@ -355,7 +365,7 @@ def parse_product_page(
             status="captcha",
             error="京东触发验证，请稍后重试或手动登录",
         )
-    if "passport.jd.com" in url or "请登录" in body_text:
+    if "passport.jd.com" in url:
         return ParsedProduct(
             title=title or "请登录",
             shop_name=shop_name,
@@ -376,14 +386,29 @@ def parse_product_page(
         page_price = _first_plausible_price([body_text])
     if page_price is None:
         page_price = embedded_price_cents
+    # A promotion label can be stale or inapplicable. A supposed final amount
+    # above the current primary price must not override that primary price.
+    if (
+        estimated_from_label is not None
+        and page_price is not None
+        and estimated_from_label > page_price
+    ):
+        estimated_from_label = None
 
     if estimated_from_label is not None:
         coupon_total = 0
         _, breakdown = _parse_coupons(body_text, page_price)
+        # A displayed final amount already includes its promotions. The text
+        # alone cannot prove which visible coupons contributed to that amount.
+        for item in breakdown:
+            item["applied"] = False
         if page_price is not None and page_price > estimated_from_label:
             coupon_total = page_price - estimated_from_label
         elif page_price is None:
             page_price = estimated_from_label
+        discount_amounts = {
+            item["amount_cents"] for item in breakdown if item["amount_cents"] is not None
+        }
         return ParsedProduct(
             title=title,
             shop_name=shop_name,
@@ -393,7 +418,11 @@ def parse_product_page(
             estimated_price_cents=estimated_from_label,
             coupon_discount_cents=coupon_total,
             coupon_breakdown=breakdown,
-            confidence="high",
+            confidence=(
+                "low"
+                if estimated_from_label in discount_amounts or page_price in discount_amounts
+                else "high"
+            ),
             status="ok",
         )
 
@@ -408,11 +437,28 @@ def parse_product_page(
         )
 
     coupon_total, breakdown = _parse_coupons(body_text, page_price)
-    estimated = max(0, page_price - coupon_total)
-    # If the page explicitly labels an "已享" section, its visible coupons
-    # have already been applied; otherwise coupon arithmetic is only an
-    # estimate and stays low confidence.
-    applied_section = bool(APPLIED_DISCOUNT_SECTION_RE.search(body_text))
+    # A labelled 京东价 is a baseline; listed applied discounts can be
+    # subtracted. An unlabeled primary amount beside "已享受" is already the
+    # displayed payable estimate and must not be discounted again.
+    applied_match = APPLIED_DISCOUNT_SECTION_RE.search(body_text)
+    applied_section = applied_match is not None
+    labelled_baseline = bool(
+        jd_match
+        and applied_match
+        and 0 <= applied_match.start() - jd_match.end() <= 120
+    )
+    estimated = (
+        page_price
+        if applied_section and not labelled_baseline
+        else max(0, page_price - coupon_total)
+    )
+    if applied_section and not labelled_baseline:
+        coupon_total = 0
+        for item in breakdown:
+            item["applied"] = False
+    discount_amounts = {
+        item["amount_cents"] for item in breakdown if item["amount_cents"] is not None
+    }
     return ParsedProduct(
         title=title,
         shop_name=shop_name,
@@ -422,7 +468,13 @@ def parse_product_page(
         estimated_price_cents=estimated,
         coupon_discount_cents=coupon_total,
         coupon_breakdown=breakdown,
-        confidence="high" if coupon_total == 0 or applied_section else "low",
+        confidence=(
+            "high"
+            if coupon_total == 0
+            and page_price not in discount_amounts
+            and estimated not in discount_amounts
+            else "low"
+        ),
         status="ok",
     )
 

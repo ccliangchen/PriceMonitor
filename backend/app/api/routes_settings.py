@@ -8,6 +8,7 @@ from app.core.db import get_db
 from app.core.scheduler import reschedule_job
 from app.core.schemas import SettingsPatch, SettingsResponse
 from app.core.settings_store import apply_settings, load_settings
+from app.services.edge_bridge import edge_bridge
 from app.services.notifications import is_notification_configured
 
 router = APIRouter()
@@ -27,7 +28,7 @@ def get_settings(db: DbSession) -> SettingsResponse:
 
 
 @router.patch("/settings", response_model=SettingsResponse)
-def update_settings(
+async def update_settings(
     patch: SettingsPatch,
     request: Request,
     db: DbSession,
@@ -38,6 +39,9 @@ def update_settings(
         if value is not None
     }
     data = apply_settings(db, updates)
+
+    if "capture_browser" in updates:
+        edge_bridge.set_browser(data["capture_browser"])
 
     if "poll_interval_minutes" in updates:
         scheduler = getattr(request.app.state, "scheduler", None)

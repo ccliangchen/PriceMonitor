@@ -1,8 +1,9 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs'
+import { createWriteStream, mkdirSync, writeFileSync, rmSync, type WriteStream } from 'node:fs'
 import net from 'node:net'
 import { join } from 'node:path'
+import { app } from 'electron'
 import log from 'electron-log/main'
 
 import {
@@ -47,6 +48,7 @@ export class Sidecar {
     this.stopping = false
     this.spawnProcess()
     await this.waitForHealth()
+    this.publishEdgeBridge()
     this.restartCount = 0
   }
 
@@ -103,6 +105,24 @@ export class Sidecar {
 
     this.child = null
     this.closeLogStreams()
+    this.removeEdgeBridge()
+  }
+
+  private edgeBridgePath(): string {
+    return join(app.getPath('appData'), 'PriceMonitor', 'edge-bridge.json')
+  }
+
+  private publishEdgeBridge(): void {
+    const path = this.edgeBridgePath()
+    mkdirSync(join(app.getPath('appData'), 'PriceMonitor'), { recursive: true })
+    writeFileSync(path, JSON.stringify({ port: this.port, token: this.token }), {
+      encoding: 'utf-8',
+      mode: 0o600
+    })
+  }
+
+  private removeEdgeBridge(): void {
+    rmSync(this.edgeBridgePath(), { force: true })
   }
 
   private authHeaders(): Record<string, string> {
@@ -219,6 +239,7 @@ export class Sidecar {
     log.error('sidecar exited unexpectedly', { code, signal })
     if (this.restartCount >= 3) {
       log.error('sidecar restart limit reached; not restarting')
+      this.removeEdgeBridge()
       return
     }
 

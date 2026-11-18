@@ -11,8 +11,8 @@ import {
   YAxis
 } from 'recharts'
 
-import { platformLabel } from '@/lib/format'
-import type { ListingPriceSeries, PricePoint } from '@/lib/types'
+import { platformLabel } from '../lib/format'
+import type { ListingPriceSeries, PricePoint } from '../lib/types'
 
 interface ChartRow {
   ts: number
@@ -39,8 +39,8 @@ function colorFor(platform: string, index: number): string {
   return FALLBACK_COLORS[index % FALLBACK_COLORS.length]
 }
 
-function seriesKey(listingId: number): string {
-  return `listing_${listingId}`
+function seriesKey(index: number): string {
+  return `shop_${index}`
 }
 
 function lastValue<T>(
@@ -59,13 +59,7 @@ function lastValue<T>(
   return result
 }
 
-export function PriceChart({
-  points,
-  series = []
-}: {
-  points: PricePoint[]
-  series?: ListingPriceSeries[]
-}): JSX.Element {
+export function buildChartRows(points: PricePoint[], series: ListingPriceSeries[]): ChartRow[] {
   const timestamps = [
     ...new Set([
       ...points.map((point) => new Date(point.captured_at).getTime()),
@@ -77,45 +71,51 @@ export function PriceChart({
     .filter((value) => Number.isFinite(value))
     .sort((left, right) => left - right)
 
-  if (timestamps.length < 2) {
+  return timestamps.map((ts) => {
+    const row: ChartRow = { ts }
+    const values: number[] = []
+    for (const [groupIndex, item] of series.entries()) {
+      const value = lastValue(
+        item.points, ts,
+        (point) => new Date(point.captured_at).getTime(),
+        (point) => point.effective_price_cents / 100
+      )
+      if (value !== undefined) {
+        row[seriesKey(groupIndex)] = value
+        values.push(value)
+      }
+    }
+    row.global = values.length > 0 ? Math.min(...values) : lastValue(
+      points, ts,
+      (point) => new Date(point.captured_at).getTime(),
+      (point) => point.lowest_price_cents / 100
+    )
+    return row
+  })
+}
+
+export function PriceChart({
+  points,
+  series = []
+}: {
+  points: PricePoint[]
+  series?: ListingPriceSeries[]
+}): JSX.Element {
+  const data = buildChartRows(points, series)
+  if (data.length < 2) {
     return (
       <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-400">
         至少完成两次抓取后，这里会显示价格曲线
       </div>
     )
   }
-
   const colors = new Map<number, string>()
   const platformCounts: Record<string, number> = {}
-  for (const item of series) {
-    const index = platformCounts[item.platform] ?? 0
-    colors.set(item.listing_id, colorFor(item.platform, index))
-    platformCounts[item.platform] = index + 1
-  }
-
-  const data: ChartRow[] = timestamps.map((ts) => {
-    const row: ChartRow = { ts }
-    const globalValue = lastValue(
-      points,
-      ts,
-      (point) => new Date(point.captured_at).getTime(),
-      (point) => point.lowest_price_cents / 100
-    )
-    if (globalValue !== undefined) {
-      row.global = globalValue
-    }
-    for (const item of series) {
-      const value = lastValue(
-        item.points,
-        ts,
-        (point) => new Date(point.captured_at).getTime(),
-        (point) => point.effective_price_cents / 100
-      )
-      if (value !== undefined) {
-        row[seriesKey(item.listing_id)] = value
-      }
-    }
-    return row
+  series.forEach((item, groupIndex) => {
+    const platform = item.platform
+    const index = platformCounts[platform] ?? 0
+    colors.set(groupIndex, colorFor(platform, index))
+    platformCounts[platform] = index + 1
   })
 
   return (
@@ -165,9 +165,9 @@ export function PriceChart({
             wrapperStyle={{ fontSize: 11, color: '#64748b' }}
           />
           <Area
-            type="monotone"
+            type="stepAfter"
             dataKey="global"
-            name="全平台最低"
+            name="所有链接最低价"
             stroke="#0f172a"
             strokeWidth={2}
             fill="url(#priceGradient)"
@@ -175,13 +175,13 @@ export function PriceChart({
             activeDot={{ r: 4 }}
             connectNulls
           />
-          {series.map((item) => (
+          {series.map((item, groupIndex) => (
             <Line
               key={item.listing_id}
               type="stepAfter"
-              dataKey={seriesKey(item.listing_id)}
-              name={`${platformLabel(item.platform)} · ${item.shop_name}`}
-              stroke={colors.get(item.listing_id)}
+              dataKey={seriesKey(groupIndex)}
+              name={`${platformLabel(item.platform)} · ${item.shop_name} · 链接 #${item.listing_id}`}
+              stroke={colors.get(groupIndex)}
               strokeWidth={1.7}
               dot={false}
               activeDot={{ r: 3 }}

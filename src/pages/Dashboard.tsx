@@ -8,6 +8,7 @@ import { ProductCard } from '@/components/ProductCard'
 import { StatusDot } from '@/components/StatusDot'
 import {
   fetchAccounts,
+  fetchEdgeStatus,
   fetchHealth,
   fetchProducts,
   fetchSettings,
@@ -53,6 +54,11 @@ export default function Dashboard(): JSX.Element {
     queryFn: fetchAccounts,
     refetchInterval: 10000
   })
+  const edge = useQuery({
+    queryKey: ['edge-status'],
+    queryFn: fetchEdgeStatus,
+    refetchInterval: 10000
+  })
   const appInfo = useQuery({
     queryKey: ['app-info'],
     queryFn: getAppInfo,
@@ -60,11 +66,7 @@ export default function Dashboard(): JSX.Element {
     retry: false
   })
 
-  const jd = accounts.data?.find((account) => account.platform === 'jd')
   const taobao = accounts.data?.find((account) => account.platform === 'taobao')
-  const loggedCount = [jd, taobao].filter(
-    (account) => account?.status === 'logged_in'
-  ).length
   const productCount = products.data?.length ?? 0
   const hasProducts = productCount > 0
   const dataDir = health.data?.data_dir ?? appInfo.data?.dataDir ?? '—'
@@ -73,7 +75,7 @@ export default function Dashboard(): JSX.Element {
     <div>
       <PageHeader
         title="仪表盘"
-        description="官方店铺价格监测。价格每 30 分钟刷新，刷新史低时通过 ServerChan 推送。"
+        description="京东、淘宝和天猫商品链接价格监测。刷新史低时通过 ServerChan 推送。"
       >
         <button
           type="button"
@@ -109,11 +111,9 @@ export default function Dashboard(): JSX.Element {
           hint={hasProducts ? '点击卡片查看价格曲线' : '还没有添加商品'}
         />
         <StatCard
-          label="平台账号"
-          value={`${loggedCount} / 2 已登录`}
-          hint={`京东：${jd ? statusLabel(jd.status) : '加载中'} · 淘宝：${
-            taobao ? statusLabel(taobao.status) : '加载中'
-          }`}
+          label="采价通道"
+          value="按需启动"
+          hint={`${({ edge: 'Edge', chrome: 'Chrome', firefox: 'Firefox' } as const)[edge.data?.selected_browser ?? 'edge']} 在采价时自动打开独立窗口 · 淘宝：${taobao ? statusLabel(taobao.status) : '加载中'}`}
         />
         <StatCard
           label="轮询间隔"
@@ -143,7 +143,7 @@ export default function Dashboard(): JSX.Element {
             <div>
               <h2 className="text-lg font-semibold">添加第一个商品</h2>
               <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-300">
-                先登录平台账号，再按型号搜索或粘贴京东/淘宝/天猫商品链接。系统只允许官方旗舰店与京东官方自营，并会按品牌再次校验；同一 SKU 会自动跨平台比价。
+                先建立一个商品，再粘贴京东、淘宝或天猫商品链接并选择归属商品。每条链接独立记录价格，同一商品可跨店铺、跨平台比价。
               </p>
             </div>
           </div>
@@ -162,7 +162,7 @@ export default function Dashboard(): JSX.Element {
             >
               <div className="text-xs font-medium text-emerald-300">第二步</div>
               <div className="mt-1 text-sm font-semibold">添加商品</div>
-              <div className="mt-1 text-xs text-slate-400">按型号搜索或粘贴链接，指定 SKU</div>
+              <div className="mt-1 text-xs text-slate-400">建立商品并逐条添加链接</div>
             </Link>
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">
               <div className="text-xs font-medium text-emerald-300">第三步</div>
@@ -199,7 +199,7 @@ export default function Dashboard(): JSX.Element {
       <div className="mt-6 flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm leading-6 text-emerald-800">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
         <p>
-          只监控天猫/京东官方旗舰店和京东官方自营；店铺类型或品牌不一致时不会启用。同一商品可绑定多个平台，史低与推送只认全平台最低价，价格来自页面展示与可见券估算，最终以下单结算为准。
+          同一商品可绑定多个京东、淘宝或天猫链接，不限制品类与店铺类型。每条链接分别记录价格，商品史低取所有有效链接中的最低价；价格来自页面展示与可见优惠，实际以下单结算为准。
         </p>
       </div>
     </div>

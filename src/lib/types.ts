@@ -7,8 +7,10 @@ export interface Health {
 }
 
 export type NotificationChannel = 'serverchan' | 'pushplus'
+export type CaptureBrowser = 'edge' | 'chrome' | 'firefox'
 
 export interface AppSettings {
+  capture_browser: CaptureBrowser
   poll_interval_minutes: number
   checkout_interval_hours: number
   close_to_tray: boolean
@@ -55,14 +57,7 @@ export interface ListingPayload {
 
 export interface ProductCreatePayload {
   name: string
-  brand: string
-  model: string
-  variant: string
-  ram_gb: number
-  storage_gb: number
-  color: string | null
   notes: string | null
-  listing: ListingPayload
 }
 
 export interface ProductSummary {
@@ -76,14 +71,20 @@ export interface ProductSummary {
   color: string | null
   current_price_cents: number | null
   current_platform: string | null
+  current_shop_name: string | null
   current_source: string | null
   current_confidence: string | null
   history_low_cents: number | null
+  history_low_platform: string | null
+  history_low_shop_name: string | null
   page_low_cents: number | null
+  page_low_platform: string | null
+  page_low_shop_name: string | null
   checkout_low_cents: number | null
   checkout_last_at: string | null
   last_checked_at: string | null
   listing_count: number
+  monitoring_enabled: boolean
   status: string
   created_at: string
 }
@@ -97,6 +98,7 @@ export interface ListingDetail {
   shop_type: string
   shop_verified: boolean
   status: string
+  capture_mode: string
   last_checked_at: string | null
   page_price_cents: number | null
   estimated_price_cents: number | null
@@ -155,41 +157,3 @@ export interface NotificationStatus {
 }
 
 export type PriceRange = '7d' | '30d' | '90d' | 'all'
-
-export interface ParsedProductQuery {
-  brand: string
-  model: string
-  variant: string
-  ram_gb: number | null
-  storage_gb: number | null
-}
-
-export interface SkuVariantOption {
-  ram_gb: number | null
-  storage_gb: number | null
-  color: string
-  spec: string
-  sku_id: string
-  url: string
-}
-
-export type SearchPlatform = 'jd' | 'taobao'
-
-export interface ModelSearchCandidate {
-  platform: SearchPlatform
-  store_name: string
-  store_type: string
-  model_url: string | null
-  title: string | null
-  requested_available: boolean
-  matched_sku_id: string | null
-  platform_item_id: string | null
-  shop_evidence: Record<string, string>
-  variants: SkuVariantOption[]
-  error: string | null
-}
-
-export interface ModelSearchResponse {
-  query: ParsedProductQuery
-  candidates: ModelSearchCandidate[]
-}

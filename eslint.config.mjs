@@ -2,7 +2,7 @@ import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
   {
-    ignores: ['out/**', 'release/**', 'node_modules/**', 'backend/**', 'resources/**']
+    ignores: ['out/**', 'release/**', 'node_modules/**', 'backend/**', 'resources/**', '**/.pytest_cache/**', '**/.test_tmp/**']
   },
   ...tseslint.configs.recommended,
   {

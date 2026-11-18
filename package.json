@@ -1,8 +1,8 @@
 {
   "name": "price-monitor",
-  "version": "0.1.0",
+  "version": "0.1.14",
   "private": true,
-  "description": "Windows desktop price monitor for JD and Taobao official stores",
+  "description": "Windows desktop price monitor for user-selected JD, Taobao and Tmall links",
   "main": "./out/main/index.js",
   "author": "PriceMonitor contributors",
   "license": "MIT",

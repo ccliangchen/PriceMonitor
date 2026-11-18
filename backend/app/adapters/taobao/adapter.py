@@ -33,7 +33,7 @@ from app.adapters.taobao.selectors import (
     SHOP_SELECTORS,
     TITLE_SELECTORS,
 )
-from app.core.exceptions import CaptchaRequired, LoginRequired, ParseError, ShopNotAllowed
+from app.core.exceptions import CaptchaRequired, LoginRequired, ParseError
 from app.core.models import Account, Listing
 from app.core.product_query import suggest_fields_from_title
 from app.core.shop_policy import brand_matches
@@ -144,10 +144,15 @@ class TaobaoAdapter:
             raise LoginRequired(parsed.error or "淘宝登录态失效，请重新登录")
         if parsed.status == "captcha":
             raise CaptchaRequired(parsed.error or "淘宝触发验证")
-        item_id = extract_item_id(final_url) or extract_item_id(target)
-        if item_id is None:
-            raise ParseError("请粘贴淘宝/天猫商品详情页链接，而不是搜索或店铺首页")
-        canonical_url = _listing_target(final_url)
+        if parsed.status == "parse_error" and "访问异常" in (parsed.error or ""):
+            raise ParseError(parsed.error or "淘宝商品页面未完整加载")
+        requested_id = extract_item_id(target)
+        item_id = extract_item_id(final_url)
+        if item_id is None or (requested_id and item_id != requested_id):
+            raise ParseError("淘宝页面没有停留在所粘贴的商品详情页，本次链接未采纳")
+        if urlparse(final_url).hostname not in ("item.taobao.com", "detail.tmall.com"):
+            raise ParseError("淘宝页面不是电脑商品详情页，本次链接未采纳")
+        listing_url = target if requested_id else _listing_target(final_url)
         product_title = parsed.title or title or f"淘宝商品 {item_id}"
         detected_specs = parse_specs(product_title)
         detected_specs.update(
@@ -160,12 +165,12 @@ class TaobaoAdapter:
         return (
             ListingInfo(
                 platform=self.platform,
-                url=canonical_url,
+                url=listing_url,
                 title=product_title,
                 shop_name=parsed.shop_name,
                 shop_type=parsed.shop_type,
                 platform_item_id=item_id,
-                platform_sku_id=extract_sku_id(final_url),
+                platform_sku_id=extract_sku_id(target) or extract_sku_id(final_url),
                 detected_specs=detected_specs,
                 evidence=parsed.evidence,
             ),
@@ -192,7 +197,7 @@ class TaobaoAdapter:
         return await page.content()
 
     async def fetch_page_price(self, listing: Listing, account: Account) -> PriceQuote:
-        target = _listing_target(listing.url)
+        target = normalize_url(listing.url)
         async with self.browser.session(account.profile_dir, headless=True) as page:
             await self._goto(page, target)
             final_url = page.url
@@ -200,101 +205,134 @@ class TaobaoAdapter:
                 await self._read_page_settled(page)
             )
             self._assert_not_blocked(final_url, title, body)
-            if len(body.strip()) < 40:
-                raise CaptchaRequired("淘宝页面没有加载出内容，可能被限流，请稍后重试")
             html = await page.content()
-            embedded_shop = extract_embedded_shop_name(html)
-            if embedded_shop:
-                shop_texts = [embedded_shop, *shop_texts]
-            parsed = parse_product_page(
-                url=final_url,
-                title=title,
-                body_text=body + "\n" + "\n".join(coupon_texts),
-                price_texts=price_texts,
-                shop_texts=shop_texts,
-                embedded_price_cents=extract_embedded_price_cents(html),
+            return self.quote_from_observation(
+                listing, final_url, title, body, price_texts,
+                shop_texts, coupon_texts, html,
             )
 
-            if parsed.status == "login_required":
-                raise LoginRequired(parsed.error or "淘宝登录态失效，请重新登录")
-            if parsed.status == "captcha":
-                raise CaptchaRequired(parsed.error or "淘宝触发验证")
+    def quote_from_observation(
+        self,
+        listing: Listing,
+        final_url: str,
+        title: str,
+        body: str,
+        price_texts: list[str],
+        shop_texts: list[str],
+        coupon_texts: list[str],
+        html: str,
+        title_texts: list[str] | None = None,
+    ) -> PriceQuote:
+        self._assert_not_blocked(final_url, title, body)
+        if len(body.strip()) < 40:
+            raise CaptchaRequired("淘宝页面没有加载出内容，可能被限流，请稍后重试")
+        if extract_item_id(final_url) != listing.platform_item_id:
+            raise ParseError("淘宝页面跳转到其他商品，本轮价格未采纳")
+        if urlparse(final_url).hostname not in ("item.taobao.com", "detail.tmall.com"):
+            raise ParseError("淘宝页面地址不是电脑商品页，本轮价格未采纳")
+        title = choose_title(title, title_texts or [])
 
-            if parsed.shop_type == "other":
-                raise ShopNotAllowed("当前商品不是淘宝/天猫官方旗舰店")
-            if parsed.shop_type not in ("unknown", listing.shop_type):
-                raise ShopNotAllowed("店铺类型发生变化，请重新确认")
-            self._assert_shop_unchanged(listing, parsed.shop_name)
+        embedded_shop = extract_embedded_shop_name(html)
+        if embedded_shop:
+            shop_texts = [embedded_shop, *shop_texts]
+        parsed = parse_product_page(
+            url=final_url,
+            title=title,
+            body_text=body + "\n" + "\n".join(coupon_texts),
+            price_texts=price_texts,
+            shop_texts=shop_texts,
+            embedded_price_cents=extract_embedded_price_cents(html),
+        )
 
-            ssr_info = extract_ssr_sku_info(html, listing.platform_sku_id)
-            ssr_price = ssr_info.price_cents if ssr_info is not None else None
-            if ssr_info is not None and (
-                any(word in ssr_info.stock_text for word in ("无货", "售罄", "缺货", "下架"))
-                or (ssr_info.quantity is not None and ssr_info.quantity <= 0)
-            ):
-                raise ParseError("该淘宝 SKU 当前无货，暂不记录价格")
+        if parsed.status == "login_required":
+            raise LoginRequired(parsed.error or "淘宝登录态失效，请重新登录")
+        if parsed.status == "captcha":
+            raise CaptchaRequired(parsed.error or "淘宝触发验证")
+
+        if parsed.shop_name and parsed.shop_name != "未知店铺":
+            listing.shop_name = parsed.shop_name
+            listing.shop_type = parsed.shop_type
+
+        ssr_info = extract_ssr_sku_info(html, listing.platform_sku_id)
+        ssr_price = ssr_info.price_cents if ssr_info is not None else None
+        if ssr_info is not None and (
+            any(word in ssr_info.stock_text for word in ("无货", "售罄", "缺货", "下架"))
+            or (ssr_info.quantity is not None and ssr_info.quantity <= 0)
+        ):
+            raise ParseError("该淘宝 SKU 当前无货，暂不记录价格")
+        if (
+            ssr_info is not None
+            and ssr_info.sub_price_cents is not None
+            and ssr_info.sub_price_title not in ("优惠前", "原价", "划线价")
+            and "访问异常" not in (parsed.error or "")
+        ):
+            # SSR subPrice is the per-SKU final price after coupons/subsidy.
+            parsed.page_price_cents = (
+                ssr_info.price_cents or parsed.page_price_cents
+            )
+            parsed.estimated_price_cents = ssr_info.sub_price_cents
+            # The SKU's own subPrice already includes applicable promotions.
+            # Page-wide coupon labels may describe alternative or overlapping
+            # offers, so they cannot be marked as separately applied.
+            parsed.coupon_discount_cents = None
+            parsed.coupon_breakdown = []
             if (
-                ssr_info is not None
-                and ssr_info.sub_price_cents is not None
-                and ssr_info.sub_price_title not in ("优惠前", "原价", "划线价")
-                and "访问异常" not in (parsed.error or "")
+                parsed.page_price_cents is not None
+                and parsed.page_price_cents > ssr_info.sub_price_cents
             ):
-                # SSR subPrice is the per-SKU final price after coupons/subsidy.
-                parsed.page_price_cents = (
-                    ssr_info.price_cents or parsed.page_price_cents
+                parsed.coupon_discount_cents = (
+                    parsed.page_price_cents - ssr_info.sub_price_cents
                 )
-                parsed.estimated_price_cents = ssr_info.sub_price_cents
-                if (
-                    parsed.page_price_cents is not None
-                    and parsed.page_price_cents > ssr_info.sub_price_cents
-                ):
-                    parsed.coupon_discount_cents = (
-                        parsed.page_price_cents - ssr_info.sub_price_cents
-                    )
-                parsed.confidence = "high"
-                parsed.status = "ok"
-                parsed.error = None
-            if parsed.confidence == "high" and (
-                not listing.platform_sku_id or ssr_info is None
-            ):
-                # Without a confirmed SKU id and SSR SKU entry we cannot
-                # guarantee the price belongs to the monitored specification.
-                parsed.confidence = "low"
-            if (
-                parsed.status == "parse_error"
-                and ssr_price is not None
-                and "访问异常" not in (parsed.error or "")
-            ):
-                parsed.page_price_cents = parsed.page_price_cents or ssr_price
+                parsed.coupon_breakdown = [{
+                    "type": "页面已含优惠",
+                    "raw": ssr_info.sub_price_title or "SKU 页面优惠价",
+                    "amount_cents": parsed.coupon_discount_cents,
+                    "applied": True,
+                }]
+            parsed.confidence = "high"
+            parsed.status = "ok"
+            parsed.error = None
+        if parsed.confidence == "high" and listing.platform_sku_id and ssr_info is None:
+            # An explicitly selected SKU must match the page's SKU data.
+            parsed.confidence = "low"
+        if (
+            parsed.status == "parse_error"
+            and ssr_price is not None
+            and "访问异常" not in (parsed.error or "")
+        ):
+            parsed.page_price_cents = parsed.page_price_cents or ssr_price
+            parsed.estimated_price_cents = ssr_price
+            parsed.confidence = "low"
+            parsed.status = "ok"
+            parsed.error = None
+        elif parsed.status == "ok" and parsed.estimated_price_cents is None:
+            if ssr_price is not None:
                 parsed.estimated_price_cents = ssr_price
-                parsed.confidence = "low"
-                parsed.status = "ok"
-                parsed.error = None
-            elif parsed.status == "ok" and parsed.estimated_price_cents is None:
-                if ssr_price is not None:
-                    parsed.estimated_price_cents = ssr_price
-                    parsed.page_price_cents = parsed.page_price_cents or ssr_price
-                    parsed.confidence = parsed.confidence or "low"
+                parsed.page_price_cents = parsed.page_price_cents or ssr_price
+                parsed.confidence = parsed.confidence or "low"
 
-            effective = parsed.estimated_price_cents or parsed.page_price_cents or 0
-            status = parsed.status
-            if status == "ok" and effective <= 0:
-                status = "parse_error"
+        effective = parsed.estimated_price_cents or parsed.page_price_cents or 0
+        status = parsed.status
+        if status == "ok" and effective <= 0:
+            status = "parse_error"
+        if parsed.page_price_cents and effective * 4 < parsed.page_price_cents:
+            parsed.confidence = "low"
+            parsed.error = "页面预估价远低于同页标价，本轮价格未采纳"
 
-            return PriceQuote(
-                platform=self.platform,
-                listing_id=listing.id,
-                source="page",
-                effective_price_cents=effective,
-                confidence=parsed.confidence,
-                captured_at=datetime.now(UTC),
-                page_price_cents=parsed.page_price_cents,
-                coupon_discount_cents=parsed.coupon_discount_cents,
-                estimated_price_cents=parsed.estimated_price_cents,
-                coupon_breakdown=parsed.coupon_breakdown,
-                status=status,
-                error=parsed.error,
-            )
+        return PriceQuote(
+            platform=self.platform,
+            listing_id=listing.id,
+            source="page",
+            effective_price_cents=effective,
+            confidence=parsed.confidence,
+            captured_at=datetime.now(UTC),
+            page_price_cents=parsed.page_price_cents,
+            coupon_discount_cents=parsed.coupon_discount_cents,
+            estimated_price_cents=parsed.estimated_price_cents,
+            coupon_breakdown=parsed.coupon_breakdown,
+            status=status,
+            error=parsed.error,
+        )
 
     async def login(self, account: Account) -> LoginStatus:
         async with self.browser.session(account.profile_dir, headless=False) as page:
@@ -331,7 +369,7 @@ class TaobaoAdapter:
             )
 
     async def open_verification(self, listing: Listing, account: Account) -> LoginStatus:
-        target = _listing_target(listing.url)
+        target = normalize_url(listing.url)
         async with self.browser.session(account.profile_dir, headless=False) as page:
             await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
             await page.wait_for_timeout(2_000)
@@ -371,7 +409,7 @@ class TaobaoAdapter:
         quietly. This method never clicks "提交订单" or a payment button.
         """
         wait_seconds = 30 if headless else 180
-        target = _listing_target(listing.url)
+        target = normalize_url(listing.url)
         async with self.browser.session(account.profile_dir, headless=headless) as page:
             await self._goto(page, target)
             await _click_exact_text(page, "立即购买")
@@ -468,6 +506,8 @@ class TaobaoAdapter:
 
     @staticmethod
     def _assert_not_blocked(url: str, title: str, body: str) -> None:
+        if "passport.taobao.com/iv/normal_validate" in url:
+            raise CaptchaRequired("淘宝触发安全验证，本轮未采价；下轮自动重试")
         # A blocked page often redirects to login with a ``_____tmd_____``
         # marker in its redirectURL. Treat that as an expired login first so
         # the UI tells the user to sign in again instead of showing a slider
@@ -482,16 +522,6 @@ class TaobaoAdapter:
             raise CaptchaRequired("淘宝触发滑块验证，请打开验证页完成")
         if any(phrase in title or phrase in body for phrase in ("访问频繁", "系统繁忙", "稍后再试")):
             raise CaptchaRequired("淘宝访问频繁，请稍后再试（不要连续刷新）")
-
-    @staticmethod
-    def _assert_shop_unchanged(listing: Listing, current_shop_name: str) -> None:
-        previous = re.sub(r"\s+", "", listing.shop_name or "")
-        current = re.sub(r"\s+", "", current_shop_name or "")
-        if not previous or not current or current == "未知店铺":
-            return
-        if previous == current or previous in current or current in previous:
-            return
-        raise ShopNotAllowed("店铺名称发生变化，已暂停监控，请重新确认官方店铺")
 
 
 FORBIDDEN_CLICK_TEXTS = (
@@ -573,8 +603,8 @@ def normalize_url(url: str) -> str:
 
     item_id = extract_item_id(value)
     if item_id is not None:
-        # Drop promotion/tracking parameters (fpChannel, mi_id, ...). They can
-        # lead to a stripped-down page without the real title/price.
+        # This canonical form identifies the item and SKU. Navigation keeps
+        # the pasted product URL separately because its referral may matter.
         if "tmall.com" in host:
             canonical = f"https://detail.tmall.com/item.htm?id={item_id}"
         else:
@@ -597,10 +627,24 @@ def _cookie_value(cookies: list[dict], name: str) -> str | None:
 
 
 def _listing_target(url: str) -> str:
-    try:
-        return normalize_url(url)
-    except ParseError:
-        return url
+    normalized = normalize_url(url)
+    value = url.strip()
+    if not value.startswith(("http://", "https://")):
+        value = f"https://{value}"
+    parsed = urlparse(value)
+    if (
+        parsed.scheme == "https"
+        and parsed.hostname in ("item.taobao.com", "detail.tmall.com")
+        and parsed.path == "/item.htm"
+        and parsed.port is None
+        and extract_item_id(value) is not None
+        and not parsed.username
+        and not parsed.password
+    ):
+        # A pasted product URL can carry a useful search referral context.
+        # Preserve it for navigation; item and SKU identity are checked later.
+        return value.split("#", 1)[0]
+    return normalized
 
 
 def parse_specs(title: str) -> dict[str, str]:

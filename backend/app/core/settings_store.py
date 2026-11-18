@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.models import Setting, utcnow
 
 DEFAULT_SETTINGS: dict[str, Any] = {
+    "capture_browser": "edge",
     "poll_interval_minutes": 30,
     "checkout_interval_hours": 6,
     "close_to_tray": True,

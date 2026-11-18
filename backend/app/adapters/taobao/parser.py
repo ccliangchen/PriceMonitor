@@ -624,6 +624,17 @@ class SsrSkuInfo:
     limit: int | None
 
 
+def _sku_price_cents(value: dict) -> int | None:
+    # Tmall's priceMoney is already in fen. priceText is displayed in yuan.
+    # Parsing priceMoney with parse_price_cents multiplies cheap items by 100.
+    raw_money = str(value.get("priceMoney") or "").strip()
+    if re.fullmatch(r"\d+", raw_money):
+        money_cents = int(raw_money)
+        if 100 <= money_cents <= 10_000_000:
+            return money_cents
+    return parse_price_cents(str(value.get("priceText") or ""))
+
+
 def extract_ssr_sku_info(html: str, sku_id: str | None) -> SsrSkuInfo | None:
     if not sku_id:
         return None
@@ -653,21 +664,9 @@ def extract_ssr_sku_info(html: str, sku_id: str | None) -> SsrSkuInfo | None:
     if entry is None:
         return None
     price = entry.get("price") if isinstance(entry.get("price"), dict) else {}
-    price_cents = None
-    for key in ("priceMoney", "priceText"):
-        raw = str(price.get(key) or "")
-        cents = parse_price_cents(raw)
-        if cents is not None:
-            price_cents = cents
-            break
+    price_cents = _sku_price_cents(price)
     sub_price = entry.get("subPrice") if isinstance(entry.get("subPrice"), dict) else {}
-    sub_price_cents = None
-    for key in ("priceMoney", "priceText"):
-        raw = str(sub_price.get(key) or "")
-        cents = parse_price_cents(raw)
-        if cents is not None:
-            sub_price_cents = cents
-            break
+    sub_price_cents = _sku_price_cents(sub_price)
     quantity = entry.get("quantity")
     limit = entry.get("limit")
     return SsrSkuInfo(
@@ -805,11 +804,19 @@ def parse_product_page(
 
     if estimated_from_label is not None:
         coupon_total = 0
-        _, breakdown = _parse_coupons(body_text, page_price)
         if page_price is not None and page_price > estimated_from_label:
             coupon_total = page_price - estimated_from_label
         elif page_price is None:
             page_price = estimated_from_label
+        # An explicit final-price label already reflects the platform's
+        # applicable discounts. Nearby coupon text may overlap or describe
+        # alternatives, so only the observed price difference is applied.
+        breakdown = [{
+            "type": "页面已含优惠",
+            "raw": "页面补贴后价/券后价",
+            "amount_cents": coupon_total,
+            "applied": True,
+        }] if coupon_total else []
         return ParsedTaobaoProduct(
             title=title,
             shop_name=shop_name,
@@ -835,6 +842,19 @@ def parse_product_page(
 
     coupon_total, breakdown = _parse_coupons(body_text, page_price)
     estimated = max(0, page_price - coupon_total)
+    visible_prices = {
+        amount for value in prices
+        if (amount := parse_price_cents(value)) is not None
+    }
+    if (
+        selector_price is not None
+        and page_price == selector_price
+        and visible_prices == {selector_price}
+        and original_from_label is None
+        and not breakdown
+        and coupon_total == 0
+    ):
+        page_confidence = "high"
     return ParsedTaobaoProduct(
         title=title,
         shop_name=shop_name,

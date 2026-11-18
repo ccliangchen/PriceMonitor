@@ -23,6 +23,7 @@ from app.core.models import JobRun, utcnow
 from app.core.scheduler import create_scheduler
 from app.core.settings_store import load_settings
 from app.services.browser import BrowserService
+from app.services.edge_bridge import edge_bridge
 
 
 def configure_logging(settings: Settings) -> None:
@@ -48,7 +49,12 @@ def create_app(settings: Settings) -> FastAPI:
         settings.browser_profiles_dir.mkdir(parents=True, exist_ok=True)
         settings.exports_dir.mkdir(parents=True, exist_ok=True)
         init_db(settings.data_dir)
+        edge_bridge.jd_pacer.configure(
+            settings.data_dir / "jd-pc-visit.json",
+        )
         with session_scope() as db:
+            edge_bridge.set_browser(load_settings(db)["capture_browser"])
+            edge_bridge.last_seen.clear()
             db.execute(
                 update(JobRun)
                 .where(JobRun.status == "running")
@@ -105,6 +111,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    effective_argv = argv if argv is not None else sys.argv[1:]
+    if effective_argv and (
+        effective_argv[0].startswith("chrome-extension://")
+        or Path(effective_argv[0]).name == "com.pricemonitor.jd_edge.json"
+    ):
+        from app.native_host import main as native_host_main
+
+        return native_host_main(effective_argv)
     args = parse_args(argv)
     token = os.environ.get("PRICE_MONITOR_TOKEN", "").strip()
     if not token:

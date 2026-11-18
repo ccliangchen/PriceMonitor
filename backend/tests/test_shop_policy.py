@@ -2,143 +2,26 @@ from app.adapters.base import ListingInfo
 from app.core.shop_policy import ShopDecision, evaluate_shop
 
 
-def make_info(
-    shop_type: str,
-    *,
-    title: str = "iQOO Neo11 至尊版 12GB+512GB",
-    shop_name: str = "iQOO官方旗舰店",
-    **evidence: str,
-) -> ListingInfo:
+def make_info(shop_type: str, platform: str = "jd", item_id: str = "100") -> ListingInfo:
     return ListingInfo(
-        platform="jd",
+        platform=platform,
         url="https://item.jd.com/100.html",
-        title=title,
-        shop_name=shop_name,
+        title="普通商品",
+        shop_name="普通店铺",
         shop_type=shop_type,
-        platform_item_id="100",
-        evidence=evidence,
+        platform_item_id=item_id,
     )
 
 
-def test_official_flagship_allowed():
-    result = evaluate_shop(
-        make_info(
-            "official_flagship",
-            official_badge="true",
-            brand_match="true",
-            shop_brand="iQOO",
-        ),
-        "iQOO",
-    )
-
-    assert result.decision == ShopDecision.ALLOWED
+def test_all_shop_types_and_categories_are_allowed():
+    for shop_type in ("official_flagship", "jd_official_self", "other", "unknown"):
+        assert evaluate_shop(make_info(shop_type), "").decision == ShopDecision.ALLOWED
 
 
-def test_flagship_without_official_badge_needs_review():
-    result = evaluate_shop(
-        make_info("official_flagship", brand_match="true"),
-        "iQOO",
-    )
-
-    assert result.decision == ShopDecision.NEEDS_REVIEW
+def test_brand_mismatch_does_not_reject_user_selected_link():
+    assert evaluate_shop(make_info("other"), "不相干品牌").decision == ShopDecision.ALLOWED
 
 
-def test_unknown_shop_needs_review():
-    result = evaluate_shop(make_info("unknown"), "iQOO")
-
-    assert result.decision == ShopDecision.NEEDS_REVIEW
-
-
-def test_other_shop_rejected():
-    result = evaluate_shop(
-        make_info("other", official_badge="true", brand_match="true"),
-        "iQOO",
-    )
-
-    assert result.decision == ShopDecision.REJECTED
-
-
-def test_brand_mismatch_rejected():
-    result = evaluate_shop(
-        make_info("official_flagship", official_badge="true", brand_match="false"),
-        "iQOO",
-    )
-
-    assert result.decision == ShopDecision.REJECTED
-
-
-def test_jd_official_self_allowed():
-    result = evaluate_shop(
-        make_info(
-            "jd_official_self",
-            self_operated="true",
-            brand_match="true",
-            shop_brand="iQOO",
-        ),
-        "iQOO",
-    )
-
-    assert result.decision == ShopDecision.ALLOWED
-
-
-def test_jd_official_self_without_badge_needs_review():
-    result = evaluate_shop(
-        make_info("jd_official_self", brand_match="true"),
-        "iQOO",
-    )
-
-    assert result.decision == ShopDecision.NEEDS_REVIEW
-
-
-def test_brand_match_falls_back_to_title():
-    result = evaluate_shop(
-        make_info(
-            "official_flagship",
-            official_badge="true",
-        ),
-        "iQOO",
-    )
-
-    assert result.decision == ShopDecision.ALLOWED
-
-
-def test_apple_alias_matches_iphone_title():
-    result = evaluate_shop(
-        make_info(
-            "jd_official_self",
-            title="Apple iPhone 17 Pro 256GB",
-            shop_name="京东自营",
-            self_operated="true",
-        ),
-        "Apple",
-    )
-
-    assert result.decision == ShopDecision.ALLOWED
-
-
-def test_unmatched_brand_needs_review():
-    result = evaluate_shop(
-        make_info(
-            "official_flagship",
-            title="vivo X200 12GB+256GB",
-            shop_name="vivo官方旗舰店",
-            official_badge="true",
-        ),
-        "iQOO",
-    )
-
-    assert result.decision == ShopDecision.NEEDS_REVIEW
-
-
-def test_shop_brand_mismatch_rejected():
-    result = evaluate_shop(
-        make_info(
-            "official_flagship",
-            official_badge="true",
-            brand_match="true",
-            shop_brand="vivo",
-        ),
-        "iQOO",
-    )
-
-    assert result.decision == ShopDecision.REJECTED
+def test_only_supported_item_links_are_allowed():
+    assert evaluate_shop(make_info("other", platform="other"), "").decision == ShopDecision.REJECTED
+    assert evaluate_shop(make_info("other", item_id=""), "").decision == ShopDecision.REJECTED

@@ -1,13 +1,47 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.adapters.base import PriceQuote
 from app.core.models import Listing, PriceSnapshot, Product, ProductPriceSnapshot
 
 
+def plausible_page_price_clause():
+    """Exclude page quotes that are implausibly below their own displayed price."""
+    return or_(
+        PriceSnapshot.source != "page",
+        PriceSnapshot.page_price_cents.is_(None),
+        PriceSnapshot.page_price_cents <= 0,
+        PriceSnapshot.effective_price_cents * 4 >= PriceSnapshot.page_price_cents,
+    )
+
+
+def plausible_product_snapshot_clause():
+    suspect = exists(
+        select(PriceSnapshot.id).where(
+            and_(
+                PriceSnapshot.listing_id == ProductPriceSnapshot.lowest_listing_id,
+                PriceSnapshot.effective_price_cents == ProductPriceSnapshot.lowest_price_cents,
+                PriceSnapshot.status == "ok",
+                PriceSnapshot.source == "page",
+                PriceSnapshot.page_price_cents > 0,
+                PriceSnapshot.effective_price_cents * 4 < PriceSnapshot.page_price_cents,
+            )
+        )
+    )
+    return ~suspect
+
+
 def save_price_snapshot(db: Session, listing: Listing, quote: PriceQuote) -> PriceSnapshot:
+    if (
+        quote.source == "page" and quote.status == "ok"
+        and quote.page_price_cents is not None
+        and quote.page_price_cents > 0
+        and quote.effective_price_cents * 4 < quote.page_price_cents
+    ):
+        quote.confidence = "low"
+        quote.error = "页面预估价远低于同页标价，本轮价格未采纳"
     snapshot = PriceSnapshot(
         listing_id=listing.id,
         captured_at=quote.captured_at,
@@ -55,7 +89,8 @@ def compute_lowest(
 def previous_low_cents(db: Session, product_id: int) -> int | None:
     return db.scalar(
         select(func.min(ProductPriceSnapshot.lowest_price_cents)).where(
-            ProductPriceSnapshot.product_id == product_id
+            ProductPriceSnapshot.product_id == product_id,
+            plausible_product_snapshot_clause(),
         )
     )
 
@@ -100,7 +135,10 @@ def record_product_snapshot(
 def latest_product_snapshot(db: Session, product_id: int) -> ProductPriceSnapshot | None:
     return db.scalar(
         select(ProductPriceSnapshot)
-        .where(ProductPriceSnapshot.product_id == product_id)
+        .where(
+            ProductPriceSnapshot.product_id == product_id,
+            plausible_product_snapshot_clause(),
+        )
         .order_by(ProductPriceSnapshot.captured_at.desc(), ProductPriceSnapshot.id.desc())
         .limit(1)
     )
@@ -109,6 +147,7 @@ def latest_product_snapshot(db: Session, product_id: int) -> ProductPriceSnapsho
 def history_low_cents(db: Session, product_id: int) -> int | None:
     return db.scalar(
         select(func.min(ProductPriceSnapshot.lowest_price_cents)).where(
-            ProductPriceSnapshot.product_id == product_id
+            ProductPriceSnapshot.product_id == product_id,
+            plausible_product_snapshot_clause(),
         )
     )

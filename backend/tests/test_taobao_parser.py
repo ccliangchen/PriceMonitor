@@ -78,10 +78,12 @@ def test_subsidy_after_price_label():
     assert parsed.page_price_cents == 439900
     assert parsed.estimated_price_cents == 319410
     assert parsed.coupon_discount_cents == 120490
-    raw_coupons = " ".join(item["raw"] for item in parsed.coupon_breakdown)
-    assert "闪电加补700元" in raw_coupons
-    assert "满1500减150" in raw_coupons
-    assert "政府补贴10%" in raw_coupons
+    assert parsed.coupon_breakdown == [{
+        "type": "页面已含优惠",
+        "raw": "页面补贴后价/券后价",
+        "amount_cents": 120490,
+        "applied": True,
+    }]
 
 
 def test_degraded_page_is_not_used():
@@ -225,6 +227,19 @@ def test_ssr_sku_price_extraction():
     assert "有货" in info.stock_text
     assert extract_ssr_sku_price_cents(html, "other") is None
     assert extract_ssr_sku_price_cents(html, None) is None
+
+
+def test_ssr_price_money_is_already_in_cents_for_cheap_item():
+    context = {"loaderData": {"sku2info": {"3318388392453": {
+        "price": {"priceText": "74", "priceMoney": "7400", "priceTitle": "优惠前"},
+        "subPrice": {"priceText": "60.9", "priceMoney": "6090", "priceTitle": "券后"},
+    }}}}
+    html = '<script id="__ICE_APP_CONTEXT__">' + json.dumps(context) + '</script>'
+    info = extract_ssr_sku_info(html, "3318388392453")
+    assert info is not None
+    assert info.price_cents == 7400
+    assert info.sub_price_cents == 6090
+    assert extract_ssr_sku_price_cents(html, "3318388392453") == 6090
 
 
 def test_embedded_shop_name_extraction():

@@ -6,20 +6,22 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.exceptions import ShopNotAllowed
 from app.core.models import Product
 from app.core.schemas import (
     ListingCreate,
     ListingPriceSeries,
     PricePoint,
+    ProductBatchCreateRequest,
     ProductCreateRequest,
     ProductDetail,
+    ProductMonitoringPatch,
     ProductSummary,
 )
 from app.services.accounts import ensure_platform_account
 from app.services.catalog import (
     add_listing_to_product,
     create_product_with_listing,
+    create_product_with_listings,
     list_products,
     listing_price_series,
     price_points,
@@ -45,9 +47,18 @@ def get_products(db: DbSession) -> list[ProductSummary]:
 def create_product(payload: ProductCreateRequest, db: DbSession) -> ProductSummary:
     try:
         product = create_product_with_listing(db, payload)
-    except ShopNotAllowed as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return product_summary(db, product)
+
+
+@router.post("/products/batch", response_model=ProductSummary)
+def create_product_batch(payload: ProductBatchCreateRequest, db: DbSession) -> ProductSummary:
+    try:
+        product = create_product_with_listings(db, payload)
+    except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return product_summary(db, product)
 
@@ -59,8 +70,6 @@ def bind_listing(product_id: int, payload: ListingCreate, db: DbSession) -> Prod
         raise HTTPException(status_code=404, detail="商品不存在")
     try:
         add_listing_to_product(db, product, payload)
-    except ShopNotAllowed as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.refresh(product)
@@ -73,6 +82,19 @@ def get_product(product_id: int, db: DbSession) -> ProductDetail:
     if product is None:
         raise HTTPException(status_code=404, detail="商品不存在")
     return product_detail(db, product)
+
+
+@router.patch("/products/{product_id}/monitoring", response_model=ProductSummary)
+def update_product_monitoring(
+    product_id: int, payload: ProductMonitoringPatch, db: DbSession
+) -> ProductSummary:
+    product = db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    product.monitoring_enabled = payload.enabled
+    db.commit()
+    db.refresh(product)
+    return product_summary(db, product)
 
 
 def _range_since(range_: str) -> datetime | None:
@@ -120,6 +142,10 @@ def refresh_product(
     product = db.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="商品不存在")
+    if not product.monitoring_enabled:
+        raise HTTPException(status_code=409, detail="商品监测已暂停，请先开启监测")
+    if not any(listing.status == "active" for listing in product.listings):
+        raise HTTPException(status_code=409, detail="没有可监测的链接，请先恢复商品链接")
 
     now = time.monotonic()
     last = _last_manual_refresh.get(product_id, 0.0)
@@ -130,7 +156,7 @@ def refresh_product(
         )
     _last_manual_refresh[product_id] = now
 
-    background_tasks.add_task(poll_product, product_id, True)
+    background_tasks.add_task(poll_product, product_id)
     return {"queued": True}
 
 

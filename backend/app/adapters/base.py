@@ -5,7 +5,7 @@ from typing import Literal, Protocol
 from app.core.models import Account, Listing
 
 ShopType = Literal["official_flagship", "jd_official_self", "other", "unknown"]
-QuoteStatus = Literal["ok", "captcha", "login_required", "parse_error", "outlier"]
+QuoteStatus = Literal["ok", "captcha", "rate_limited", "login_required", "parse_error", "outlier"]
 PriceSource = Literal["page", "checkout"]
 PriceConfidence = Literal["high", "low"]
 

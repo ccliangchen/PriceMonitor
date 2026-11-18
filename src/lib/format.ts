@@ -52,9 +52,9 @@ export function shopTypeLabel(shopType: string): string {
     return '官方旗舰店'
   }
   if (shopType === 'other') {
-    return '非官方店铺'
+    return '普通店铺'
   }
-  return '店铺待确认'
+  return '店铺类型未识别'
 }
 
 export function priceSourceLabel(source: string | null | undefined): string {
@@ -71,9 +71,12 @@ export function statusLabel(status: string): string {
   const labels: Record<string, string> = {
     active: '监控中',
     paused: '已暂停',
+    empty: '待添加链接',
     needs_review: '待确认',
     error: '异常',
     ok: '正常',
+    rate_limited: '访问受限，等待下轮重试',
+    low_confidence: '价格未核实',
     failed: '失败',
     skipped: '已跳过',
     running: '进行中',

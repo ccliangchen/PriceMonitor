@@ -17,6 +17,10 @@ backend/dev-data/
 dev-data/
 backend/build/
 backend/dist/
+backend/package-dist/
+.pytest-tmp-*/
+.pytest-cache-*/
+.tmp_pytest/
 
 # App runtime data
 *.db

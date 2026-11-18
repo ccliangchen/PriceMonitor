@@ -1,0 +1,9 @@
+{
+  "name": "com.pricemonitor.jd_edge",
+  "description": "PriceMonitor local page bridge for Firefox",
+  "path": "price-monitor-backend.exe",
+  "type": "stdio",
+  "allowed_extensions": [
+    "pricemonitor@price-monitor.local"
+  ]
+}

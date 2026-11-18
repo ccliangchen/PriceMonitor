@@ -93,7 +93,7 @@ export function Onboarding({ onFinished }: { onFinished: () => void }): JSX.Elem
                 欢迎使用 PriceMonitor
               </h1>
               <p className="mt-0.5 text-xs text-slate-500">
-                京东 / 淘宝官方店铺价格监测 · 本地运行 · 数据不上传
+                京东 / 淘宝 / 天猫价格监测 · 本地运行 · 数据不上传
               </p>
             </div>
           </div>
@@ -129,8 +129,8 @@ export function Onboarding({ onFinished }: { onFinished: () => void }): JSX.Elem
                 <div className="text-sm leading-6 text-slate-700">
                   <p className="font-medium text-slate-900">它能做什么</p>
                   <ul className="mt-2 space-y-1.5 text-slate-600">
-                    <li>· 每 30 分钟抓取京东、淘宝/天猫官方店铺的页面预估价</li>
-                    <li>· 同一商品跨平台比价，只推送全平台新低</li>
+                    <li>· 每 30 分钟抓取已添加链接的页面价格</li>
+                    <li>· 同一商品跨店铺、跨平台比价，只推送所有链接中的新低</li>
                     <li>· 史低、价格曲线、任务日志全部保存在本机</li>
                   </ul>
                 </div>
@@ -138,7 +138,7 @@ export function Onboarding({ onFinished }: { onFinished: () => void }): JSX.Elem
 
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 {[
-                  { icon: ShieldCheck, title: '仅官方店铺', text: '官方旗舰店 / 京东官方自营' },
+                  { icon: ShieldCheck, title: '自行管理链接', text: '商品与链接由你手动归组' },
                   { icon: LockKeyhole, title: '不保存密码', text: '只保留本机登录态' },
                   { icon: ShieldAlert, title: '不自动下单', text: '只读取价格，不提交订单' }
                 ].map(({ icon: Icon, title, text }) => (
@@ -271,7 +271,7 @@ export function Onboarding({ onFinished }: { onFinished: () => void }): JSX.Elem
                   准备完成
                 </div>
                 <p className="mt-1 text-xs leading-5 text-emerald-800">
-                  接下来先登录京东 / 淘宝账号，再按型号搜索或粘贴商品链接。应用只允许官方旗舰店和京东官方自营，校验通过后才会开始监测。
+                  接下来到“账号管理”查看 Edge、Chrome 或 Firefox 扩展安装步骤；同一个扩展负责读取京东链接与价格，以及淘宝直接读取失败时的备用通道。先建立商品，再选择商品添加链接；店铺类型不影响监测。
                 </p>
               </div>
 

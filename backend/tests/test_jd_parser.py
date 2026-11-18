@@ -76,6 +76,58 @@ def test_to_price_wins_over_page_price():
     assert parsed.coupon_discount_cents == 50000
 
 
+def test_recommended_self_operated_shop_does_not_override_current_seller():
+    parsed = parse_product_page(
+        url="https://item.jd.com/100.html",
+        title="iQOO Neo12",
+        body_text="京东价 ￥4899.00 iQOO官方旗舰店 猜你喜欢 某某京东自营旗舰店",
+        price_texts=["￥4899.00"],
+        shop_texts=["iQOO官方旗舰店"],
+    )
+    assert parsed.shop_type == "official_flagship"
+    assert parsed.shop_name == "iQOO官方旗舰店"
+
+
+def test_already_applied_subsidy_is_not_subtracted_twice():
+    parsed = parse_product_page(
+        url="https://item.jd.com/100.html",
+        title="iQOO Neo11",
+        body_text=(
+            "¥3193.48 国补领后价 ¥3699 已享受：限时立减5 "
+            "国家补贴｜领后减￥500 可再享：最高返159京豆"
+        ),
+        price_texts=["¥3193.48"],
+        shop_texts=["iQOO京东自营旗舰店"],
+    )
+    assert parsed.page_price_cents == 319348
+    assert parsed.estimated_price_cents == 319348
+    assert parsed.coupon_discount_cents == 0
+    assert parsed.confidence == "high"
+
+
+def test_available_coupon_without_applied_section_stays_low_confidence():
+    parsed = parse_product_page(
+        url="https://item.jd.com/100.html",
+        title="iQOO Neo11",
+        body_text="京东价 ￥3999.00 可再享：国家补贴｜领后减￥500",
+        price_texts=["￥3999.00"],
+        shop_texts=["iQOO京东自营旗舰店"],
+    )
+    assert parsed.confidence == "low"
+
+
+def test_login_prompt_inside_product_page_does_not_hide_visible_price():
+    parsed = parse_product_page(
+        url="https://item.jd.com/100.html",
+        title="iQOO Neo11 至尊版",
+        body_text="京东价 ￥7499.00 到手价 ￥6999.00 领券请登录 京东自营",
+        price_texts=["￥7499.00"],
+        shop_texts=["iQOO京东自营旗舰店"],
+    )
+    assert parsed.status == "ok"
+    assert parsed.estimated_price_cents == 699900
+
+
 def test_flagship_without_official_is_unknown():
     parsed = parse_product_page(
         url="https://item.jd.com/100.html",
@@ -232,7 +284,19 @@ def test_applied_coupons_compute_final_price_without_final_label():
 
     assert parsed.page_price_cents == 489900
     assert parsed.estimated_price_cents == 384900
-    assert parsed.confidence == "high"
+    assert parsed.confidence == "low"
+
+
+def test_coupon_amount_cannot_become_high_confidence_product_price():
+    parsed = parse_product_page(
+        url="https://item.jd.com/100305145887.html",
+        title="iQOO Neo11",
+        body_text="国补领后价 ￥500 已享受：国家补贴 领后减￥500",
+        price_texts=["￥500"],
+        shop_texts=["iQOO京东自营旗舰店"],
+    )
+    assert parsed.page_price_cents == 50000
+    assert parsed.confidence == "low"
 
 
 def test_embedded_promotion_and_seckill_price():
